@@ -1,0 +1,74 @@
+from tqdm.auto import trange
+
+from my_rl_lib.environments.abstract import Environment
+from my_rl_lib.learning.result import LearningResult
+from my_rl_lib.metrics.collector import MetricsCollector
+from my_rl_lib.metrics.context_key import ContextKey
+from my_rl_lib.policies.epsilon_greedy import EpsilonGreedy
+from my_rl_lib.values.action_state import ActionStateValues
+from my_rl_lib.values.initializer import Initializer
+
+
+def sarsa(
+    environment: Environment,
+    num_episodes: int,
+    alpha: float,  # step size
+    gamma: float,
+    epsilon: float,
+    initializer: Initializer,
+    metrics_collector: MetricsCollector | None = None,
+) -> LearningResult:
+    # validate parameters
+    if num_episodes <= 0:
+        raise ValueError("num_episodes must be a positive integer.")
+    if not (0 < alpha <= 1):
+        raise ValueError("alpha must be in the range (0, 1].")
+
+    # Initialize action-state values
+    values = ActionStateValues()
+    values.init_from_environment(environment, initializer)
+
+    # Initialize epsilon-greedy policy
+    policy = EpsilonGreedy(epsilon=epsilon)
+    policy.init_from_environment_and_values(environment, values)
+
+    for episode in trange(num_episodes):
+        environment.reset()
+        state = environment.current_state
+        action = policy.select_action(state)
+
+        episode_reward = 0.0
+        episode_steps = 0
+
+        while not environment.is_current_state_terminal():
+            step_result = environment.step(action)
+            next_state = step_result.next_state
+
+            next_action = policy.select_action(next_state)
+
+            # Update Q-value
+            td_target = step_result.reward + gamma * values.get_value((next_state, next_action))
+            td_delta = td_target - values.get_value((state, action))
+            values.set_value((state, action), values.get_value((state, action)) + alpha * td_delta)
+
+            # Only update policy for the state that changed (incremental update)
+            policy.update_probabilities_for_state(state, values)
+
+            state = next_state
+            action = next_action
+
+            episode_reward += step_result.reward
+            episode_steps += 1
+
+        # Record episode metrics
+        if metrics_collector is not None:
+            metrics_collector.on_episode_end(
+                episode=episode,
+                **{
+                    ContextKey.EPISODE_REWARD.value: episode_reward,
+                    ContextKey.EPISODE_STEPS.value: episode_steps,
+                    ContextKey.EPSILON.value: epsilon,
+                },
+            )
+
+    return LearningResult(values=values, policy=policy)

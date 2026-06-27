@@ -1,0 +1,56 @@
+[project]
+name = "my-rl-lib"
+version = "0.1.0"
+description = "A modular reinforcement learning library implementing on-policy and off-policy algorithms with flexible metrics collection."
+readme = "README.md"
+authors = [
+    { name = "Amine El Ouassouli", email = "a.elouassouli@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "dash>=3.3.0",
+    "ipykernel>=7.1.0",
+    "matplotlib>=3.10.7",
+    "numpy>=2.0.0",
+    "plotly>=6.5.0",
+    "pydantic>=2.12.5",
+    "imageio>=2.0.0",
+    "mlflow>=2.0.0",
+    "tqdm>=4.67.1",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.13,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.0.0",
+    "ruff>=0.14.6",
+    "pytest>=8.0.0",
+    "pytest-cov>=6.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v --cov=my_rl_lib --cov-report=term-missing"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[[tool.mypy.overrides]]
+module = [
+    "matplotlib.*",
+    "dash.*",
+    "plotly.*",
+    "tensorboard.*",
+    "mlflow.*",
+    "imageio.*",
+    "tqdm.*",
+]
+ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 100
