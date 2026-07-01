@@ -1,8 +1,10 @@
 import random
+import tempfile
 from enum import Enum
 from typing import Any, Self
 
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.patches import Circle, Rectangle
 from pydantic import Field, PositiveInt, PrivateAttr, field_validator, model_validator
 
@@ -754,17 +756,16 @@ class WindyGridWorld(Environment):
         ax.grid(True, alpha=0.3)
         ax.set_title(title)
 
-    def render_policy(
-        self, values: Values, options: list[RenderPolicyOptions], file_path: str | None = None
-    ) -> None:
-        """Render the given values in the environment.
+    def _build_policy_figure(
+        self,
+        values: Values,
+        options: list[RenderPolicyOptions],
+    ) -> Any:
+        """Build (but do not save/show) the policy figure for the given options.
 
-        Args:
-            values: The values to render.
-            options: List of rendering options (VALUES, GREEDY_ACTIONS).
-            file_path: Optional path to save the figure.
+        Returns:
+            The matplotlib Figure. Caller is responsible for saving/showing/closing.
         """
-
         # Create subplots - one per option
         num_plots = len(options)
         fig, axes = plt.subplots(
@@ -810,13 +811,170 @@ class WindyGridWorld(Environment):
                 self.__setup_axis(ax, title)
 
         plt.tight_layout()
+        return fig
+
+    def render_policy(
+        self,
+        values: Values,
+        options: list[RenderPolicyOptions],
+        file_path: str | None = None,
+        log_to_mlflow: bool = False,
+    ) -> None:
+        """Render the given values in the environment.
+
+        Args:
+            values: The values to render.
+            options: List of rendering options (VALUES, GREEDY_ACTIONS).
+            file_path: Optional path to save the figure.
+        """
+        fig = self._build_policy_figure(values, options)
 
         # Save or show the figure
         if file_path is not None:
-            plt.savefig(file_path, bbox_inches="tight", dpi=150)
+            fig.savefig(file_path, bbox_inches="tight", dpi=150)
             plt.close(fig)
+            if log_to_mlflow:
+                import mlflow
+
+                mlflow.log_artifact(file_path, artifact_path="plots")
+        elif log_to_mlflow:
+            import os
+
+            import mlflow
+
+            with tempfile.NamedTemporaryFile(
+                suffix=".png", prefix="policy_plot_", delete=False
+            ) as tmp_file:
+                tmp_path = tmp_file.name
+            fig.savefig(tmp_path, bbox_inches="tight", dpi=150)
+            plt.close(fig)
+            try:
+                mlflow.log_artifact(tmp_path, artifact_path="plots")
+            finally:
+                os.remove(tmp_path)
         else:
             plt.show()
+
+    def render_policy_array(
+        self,
+        values: Values,
+        options: list[RenderPolicyOptions] | None = None,
+    ) -> np.ndarray:
+        """Render the policy figure to an RGB numpy array (no file I/O).
+
+        Uses the Agg canvas directly so it is independent of the active
+        matplotlib backend — safe to call from a worker process.
+
+        Args:
+            values: The values to render.
+            options: Rendering options; defaults to values + greedy trajectory.
+
+        Returns:
+            A ``(H, W, 3)`` uint8 RGB image array.
+        """
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        if options is None:
+            options = [RenderPolicyOptions.VALUES, RenderPolicyOptions.GREEDY_AGENT]
+
+        fig = self._build_policy_figure(values, options)
+        canvas: Any = FigureCanvasAgg(fig)
+        canvas.draw()
+        image = np.asarray(canvas.buffer_rgba())[..., :3].copy()
+        plt.close(fig)
+        return image
+
+    def _build_greedy_episode_frames(
+        self,
+        values: Values,
+        number_episodes: int,
+    ) -> tuple[list[Any], list[Any]]:
+        """Simulate greedy episodes and flatten them into per-step frame specs.
+
+        Returns:
+            Tuple ``(all_episodes, frames)`` where each frame is
+            ``(episode_idx, step_idx, state, next_action, reward, is_terminal)``.
+        """
+        greedy_policy = Greedy()
+        greedy_policy.init_from_environment_and_values(self, values)
+
+        all_episodes = []
+        for _ in range(number_episodes):
+            history = self.simulate_greedy_agent(greedy_policy, max_steps=1000)
+            all_episodes.append(history)
+
+        frames = []
+        for episode_idx, history in enumerate(all_episodes):
+            for step_idx, (state, action, reward) in enumerate(history):
+                is_terminal = state == self.goal_cell
+                # Get the next action (action at t+1) if available
+                next_action = None
+                if step_idx + 1 < len(history):
+                    next_action = history[step_idx + 1][1]
+                frames.append((episode_idx, step_idx, state, next_action, reward, is_terminal))
+
+        return all_episodes, frames
+
+    def _draw_animation_frame(self, ax: Any, frame: Any, all_episodes: list[Any]) -> None:
+        """Draw a single animation frame onto the given axis."""
+        ax.clear()
+
+        episode_num, step_num, state, action, reward, is_terminal = frame
+
+        # Draw base grid
+        self.__draw_base_grid(ax)
+
+        # Draw wind indicators
+        self.__render_wind(ax)
+
+        # Draw the agent
+        if state is not None:
+            agent_row, agent_col = state
+            circle = Circle(
+                (agent_col + 0.5, self.grid_height - agent_row - 0.5),
+                0.2,
+                color="black",
+                zorder=10,
+            )
+            ax.add_patch(circle)
+
+        # Draw action arrow (red) if action is available
+        if action is not None and state is not None:
+            agent_row, agent_col = state
+            action_delta_row, action_delta_col = action
+
+            # Calculate arrow position in matplotlib coordinates
+            start_x = agent_col + 0.5
+            start_y = self.grid_height - agent_row - 0.5
+
+            # Scale arrow to be visible but not too large
+            dx = action_delta_col * 0.35
+            dy = -action_delta_row * 0.35  # Negate because matplotlib y increases upward
+
+            # Draw action arrow
+            ax.arrow(
+                start_x,
+                start_y,
+                dx,
+                dy,
+                head_width=0.15,
+                head_length=0.1,
+                fc="red",
+                ec="red",
+                linewidth=2,
+                length_includes_head=True,
+                zorder=11,
+                alpha=0.8,
+            )
+
+        # Setup axis
+        total_episodes = len(all_episodes)
+        total_steps = len(all_episodes[episode_num]) - 1  # Subtract initial state
+        title = f"Episode {episode_num + 1}/{total_episodes} | Step {step_num}/{total_steps}"
+        if is_terminal:
+            title += " | GOAL REACHED"
+
+        self.__setup_axis(ax, title, show_trajectory_legend=False)
 
     def generate_agent_animation_greedy_policy_from_values(
         self,
@@ -824,6 +982,7 @@ class WindyGridWorld(Environment):
         number_episodes: int,
         fps: int = 10,
         file_path: str | None = None,
+        log_to_mlflow: bool = False,
     ) -> None:
         """Generate an animation of a greedy agent acting in the environment.
 
@@ -840,30 +999,10 @@ class WindyGridWorld(Environment):
         if file_path is None:
             file_path = "agent_animation.mp4"
 
-        # Create a greedy policy from the values
-        greedy_policy = Greedy()
-        greedy_policy.init_from_environment_and_values(self, values)
-
-        # Generate all episodes
-        all_episodes = []
-        for episode in range(number_episodes):
-            history = self.simulate_greedy_agent(greedy_policy, max_steps=1000)
-            all_episodes.append(history)
+        all_episodes, frames = self._build_greedy_episode_frames(values, number_episodes)
 
         # Create figure and axis for animation
         fig, ax = plt.subplots(figsize=(self.grid_width * 0.8, self.grid_height * 0.8), dpi=150)
-
-        # Flatten all episodes into a single sequence of frames
-        # Each frame shows agent at time t and action at time t+1
-        frames = []
-        for episode_idx, history in enumerate(all_episodes):
-            for step_idx, (state, action, reward) in enumerate(history):
-                is_terminal = state == self.goal_cell
-                # Get the next action (action at t+1) if available
-                next_action = None
-                if step_idx + 1 < len(history):
-                    next_action = history[step_idx + 1][1]
-                frames.append((episode_idx, step_idx, state, next_action, reward, is_terminal))
 
         def init() -> list[Any]:
             """Initialize animation."""
@@ -872,65 +1011,7 @@ class WindyGridWorld(Environment):
 
         def animate(frame_idx: int) -> list[Any]:
             """Animate a single frame."""
-            ax.clear()
-
-            episode_num, step_num, state, action, reward, is_terminal = frames[frame_idx]
-
-            # Draw base grid
-            self.__draw_base_grid(ax)
-
-            # Draw wind indicators
-            self.__render_wind(ax)
-
-            # Draw the agent
-            if state is not None:
-                agent_row, agent_col = state
-                circle = Circle(
-                    (agent_col + 0.5, self.grid_height - agent_row - 0.5),
-                    0.2,
-                    color="black",
-                    zorder=10,
-                )
-                ax.add_patch(circle)
-
-            # Draw action arrow (red) if action is available
-            if action is not None and state is not None:
-                agent_row, agent_col = state
-                action_delta_row, action_delta_col = action
-
-                # Calculate arrow position in matplotlib coordinates
-                start_x = agent_col + 0.5
-                start_y = self.grid_height - agent_row - 0.5
-
-                # Scale arrow to be visible but not too large
-                dx = action_delta_col * 0.35
-                dy = -action_delta_row * 0.35  # Negate because matplotlib y increases upward
-
-                # Draw action arrow
-                ax.arrow(
-                    start_x,
-                    start_y,
-                    dx,
-                    dy,
-                    head_width=0.15,
-                    head_length=0.1,
-                    fc="red",
-                    ec="red",
-                    linewidth=2,
-                    length_includes_head=True,
-                    zorder=11,
-                    alpha=0.8,
-                )
-
-            # Setup axis
-            total_episodes = len(all_episodes)
-            total_steps = len(all_episodes[episode_num]) - 1  # Subtract initial state
-            title = f"Episode {episode_num + 1}/{total_episodes} | Step {step_num}/{total_steps}"
-            if is_terminal:
-                title += " | GOAL REACHED"
-
-            self.__setup_axis(ax, title, show_trajectory_legend=False)
-
+            self._draw_animation_frame(ax, frames[frame_idx], all_episodes)
             return []
 
         # Create animation
@@ -949,3 +1030,43 @@ class WindyGridWorld(Environment):
         plt.close(fig)
 
         print(f"Animation saved to {file_path}")
+
+        if log_to_mlflow:
+            import mlflow
+
+            mlflow.log_artifact(file_path, artifact_path="animations")
+
+    def render_greedy_agent_frames(
+        self,
+        values: Values,
+        number_episodes: int = 3,
+    ) -> list[np.ndarray]:
+        """Render greedy-agent episodes into a list of RGB numpy frames.
+
+        Uses the Agg canvas directly (backend-independent), so it is safe to
+        call from a worker process. Frames share a fixed size (constant figsize
+        and dpi), suitable for encoding to a GIF/video.
+
+        Args:
+            values: The values to use for creating a greedy policy.
+            number_episodes: Number of episodes to simulate and animate.
+
+        Returns:
+            List of ``(H, W, 3)`` uint8 RGB frame arrays.
+        """
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+        all_episodes, frames = self._build_greedy_episode_frames(values, number_episodes)
+
+        fig, ax = plt.subplots(figsize=(self.grid_width * 0.8, self.grid_height * 0.8), dpi=150)
+        canvas: Any = FigureCanvasAgg(fig)
+
+        rendered_frames: list[np.ndarray] = []
+        for frame in frames:
+            self._draw_animation_frame(ax, frame, all_episodes)
+            canvas.draw()
+            image = np.asarray(canvas.buffer_rgba())[..., :3].copy()
+            rendered_frames.append(image)
+
+        plt.close(fig)
+        return rendered_frames

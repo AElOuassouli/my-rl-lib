@@ -2,7 +2,7 @@
 
 
 run-mlflow: ## Opens MLflow UI
-	mlflow ui --backend-store-uri mlruns
+	uv run mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5001
 
 test: ## Run unit tests
 	uv run pytest

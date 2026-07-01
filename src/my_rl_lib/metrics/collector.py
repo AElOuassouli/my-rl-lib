@@ -1,23 +1,29 @@
 """Metrics collection for RL training."""
 
 import atexit
+import time
 import warnings
 from typing import Any, Literal, Set
 
 from my_rl_lib.metrics.backends.base import LoggingBackend
 from my_rl_lib.metrics.context_key import ContextKey
 from my_rl_lib.metrics.handlers import (
+    AgentAnimationHandler,
     EpisodeRewardHandler,
+    EpisodesPerSecondHandler,
     EpisodeStepsHandler,
     EpsilonHandler,
     ImportanceRatioHandler,
     MetricHandler,
+    PolicyVisualizationHandler,
     StateVisitationHeatmapHandler,
     TDErrorHandler,
+    TrainedModelHandler,
+    TrainingTimeHandler,
     ValueChangeHandler,
     ValueFunctionHeatmapHandler,
 )
-from my_rl_lib.metrics.metric_type import MediaType, MetricType
+from my_rl_lib.metrics.metric_type import ArtifactType, MediaType, MetricType
 
 # Default handlers for standard metrics
 DEFAULT_HANDLERS: dict[MetricType, MetricHandler] = {
@@ -35,6 +41,17 @@ MEDIA_HANDLERS: dict[str, MetricHandler] = {
     MediaType.VALUE_FUNCTION_HEATMAP: ValueFunctionHeatmapHandler(),
 }
 
+# End-of-training handlers (users opt-in via track_at_end parameter).
+# Stored as classes because they are configurable — instantiated with the
+# per-item config supplied in track_at_end.
+END_OF_TRAINING_HANDLERS: dict[Any, type[MetricHandler]] = {
+    MediaType.GREEDY_AGENT_ANIMATION: AgentAnimationHandler,
+    MediaType.POLICY_VISUALIZATION: PolicyVisualizationHandler,
+    ArtifactType.TRAINED_MODEL: TrainedModelHandler,
+    MetricType.TRAINING_TIME: TrainingTimeHandler,
+    MetricType.EPISODES_PER_SECOND: EpisodesPerSecondHandler,
+}
+
 
 class MetricsCollector:
     """
@@ -47,49 +64,65 @@ class MetricsCollector:
     def __init__(
         self,
         track: dict[MetricType | MediaType, int] | list[MetricType | MediaType] | None = None,
+        track_at_end: dict[Any, Any] | list[Any] | None = None,
         backend: LoggingBackend | None = None,
         custom_handlers: dict[str, MetricHandler] | None = None,
         keep_in_memory: bool | None = None,
-        batch_size: int = 100,
+        batch_size: int | None = None,
     ):
         """
         Initialize metrics collector.
 
         Args:
-            track: Metrics to track with logging frequency.
+            track: Periodic metrics to track with logging frequency.
                    Can be:
-                   - dict[MetricType | str, int]: {metric: log_every_n_episodes}
-                   - list[MetricType]: All metrics logged every episode
+                   - dict[MetricType | MediaType, int]: {metric: log_every_n_episodes}
+                   - list[MetricType | MediaType]: All logged every episode
                    - None: Default metrics (episode_reward, episode_steps) every episode
-            backend: Optional logging backend (e.g., TensorBoardBackend)
+            track_at_end: Artifacts produced once at the end of training (in the
+                   backend worker process, off the training thread). Can be:
+                   - dict[MetricType | MediaType | ArtifactType, config | None]:
+                     each item mapped to a typed config model (e.g. AnimationConfig)
+                     or None for defaults
+                   - list[...]: all items with default configuration
+                   - None: nothing produced at end of training
+            backend: Optional logging backend (e.g., MLflowBackend)
             custom_handlers: Custom handlers for user-defined metrics
             keep_in_memory: Whether to store metrics in memory.
                            If None, auto-disable when backend is provided.
-            batch_size: Number of episodes to batch before sending to backend (default: 100)
-                       Higher values reduce queue pressure but increase memory usage
-                           If None, auto-disable when backend is provided.
+            batch_size: Episodes to batch before flushing to backend. When None,
+                       uses backend.preferred_batch_size (e.g. 1 for MLflow live
+                       updates, 100 otherwise). Higher values reduce queue pressure.
 
         Example:
             >>> collector = MetricsCollector(
-            ...     track={
-            ...         MetricType.EPISODE_REWARD: 1,
-            ...         MetricType.EPSILON: 10,
-            ...         'state_visitation_heatmap': 50
+            ...     track={MetricType.EPISODE_REWARD: 1, MediaType.VALUE_FUNCTION_HEATMAP: 500},
+            ...     track_at_end={
+            ...         MediaType.GREEDY_AGENT_ANIMATION: AnimationConfig(number_episodes=3),
+            ...         MediaType.POLICY_VISUALIZATION: None,
+            ...         ArtifactType.TRAINED_MODEL: TrainedModelConfig(model_name="q_values"),
             ...     },
-            ...     backend=TensorBoardBackend(log_dir="runs/exp1")
+            ...     backend=MLflowBackend(experiment_name="exp1"),
             ... )
         """
         # Parse track parameter
-        clean_track: dict[MetricType | MediaType, int] = {}
         if track is None:
-            clean_track = {MetricType.EPISODE_REWARD: 1, MetricType.EPISODE_STEPS: 1}
+            clean_track: dict[MetricType | MediaType, int] = {
+                MetricType.EPISODE_REWARD: 1,
+                MetricType.EPISODE_STEPS: 1,
+            }
         elif isinstance(track, list):
-            # Convert list to dict (all with frequency=1)
             clean_track = {metric: 1 for metric in track}
+        else:
+            clean_track = track
 
         self._metric_frequencies = clean_track
 
-        # Build handler registry
+        # Resolve batch_size: use backend's preference when not explicitly set
+        if batch_size is None:
+            batch_size = backend.preferred_batch_size if backend is not None else 100
+
+        # Build handler registry (periodic handlers)
         self._handlers: dict[MetricType | MediaType, MetricHandler] = {}
 
         for metric_key in clean_track.keys():
@@ -104,18 +137,53 @@ class MetricsCollector:
                 self._handlers[metric_key] = custom_handlers[metric_key]
             # If no handler found, we'll try direct context lookup later
 
-        # Compute ALL required keys upfront (union across all handlers)
-        self._all_required_keys: Set[ContextKey] = set()
-        for handler in self._handlers.values():
-            self._all_required_keys.update(handler.required_keys)
+        # Build end-of-training handler registry, instantiating with per-item config
+        self._final_handlers: dict[Any, MetricHandler] = {}
+        if track_at_end is None:
+            end_track: dict[Any, Any] = {}
+        elif isinstance(track_at_end, list):
+            end_track = {item: None for item in track_at_end}
+        else:
+            end_track = track_at_end
 
-        # Create mapping: ContextKey -> list of handlers that need it
+        for end_key, config in end_track.items():
+            handler_cls = END_OF_TRAINING_HANDLERS.get(end_key)
+            if handler_cls is not None:
+                self._final_handlers[end_key] = (
+                    handler_cls(config=config) if config is not None else handler_cls()
+                )
+            elif custom_handlers and end_key in custom_handlers:
+                self._final_handlers[end_key] = custom_handlers[end_key]
+
+        # Required keys for periodic handlers (serialized/shipped every matching episode)
+        self._episode_required_keys: Set[ContextKey] = set()
+        for handler in self._handlers.values():
+            self._episode_required_keys.update(handler.required_keys)
+
+        # Required keys for end-of-training handlers (raw-cached, snapshotted at close)
+        self._final_required_keys: Set[ContextKey] = set()
+        for handler in self._final_handlers.values():
+            self._final_required_keys.update(handler.required_keys)
+
+        # Union exposed to training loops so they know what context to pass
+        self._all_required_keys: Set[ContextKey] = (
+            self._episode_required_keys | self._final_required_keys
+        )
+
+        # Create mapping: ContextKey -> list of periodic handlers that need it
         self._key_to_handlers: dict[ContextKey, list[MetricType | MediaType]] = {}
         for metric_key, handler in self._handlers.items():
             for context_key in handler.required_keys:
                 if context_key not in self._key_to_handlers:
                     self._key_to_handlers[context_key] = []
                 self._key_to_handlers[context_key].append(metric_key)
+
+        # Raw references to context needed by end-of-training handlers.
+        # Snapshotted (deep-copied) at close, so we hold the final trained state.
+        self._final_context_cache: dict[ContextKey, Any] = {}
+        self._start_time = time.time()
+        self._episode_count = 0
+        self._last_episode = 0
 
         self.backend = backend
 
@@ -178,8 +246,8 @@ class MetricsCollector:
                 # Unknown key - warn and skip
                 warnings.warn(f"Unknown context key: '{key}'. Skipping.", RuntimeWarning)
 
-        # Validate that required keys are present
-        missing_keys = self._all_required_keys - context.keys()
+        # Validate that keys required by periodic handlers are present
+        missing_keys = self._episode_required_keys - context.keys()
         if missing_keys:
             # Determine which handlers are affected
             affected_metrics = set()
@@ -192,10 +260,19 @@ class MetricsCollector:
                     RuntimeWarning,
                 )
 
-        # Extract and serialize raw data ONCE for all handlers (deduplicated)
+        # Cache raw references for end-of-training handlers; snapshotted at close
+        # so we retain the final trained env/values without extra per-episode work.
+        for context_key in self._final_required_keys:
+            if context_key in context:
+                self._final_context_cache[context_key] = context[context_key]
+
+        self._last_episode = episode
+        self._episode_count += 1
+
+        # Extract and serialize raw data ONCE for periodic handlers (deduplicated)
         extracted_data: dict[ContextKey, Any] = {}
 
-        for context_key in self._all_required_keys:
+        for context_key in self._episode_required_keys:
             if context_key in context:
                 # Apply serialization logic based on type
                 extracted_data[context_key] = self._serialize_value(
@@ -234,12 +311,20 @@ class MetricsCollector:
                 handlers_info[handler_key] = {
                     "class": handler.__class__,
                     "required_keys": list(handler.required_keys),
+                    "config": getattr(handler, "config", None),
                 }
+
+            # Only ship context keys actually needed by this episode's handlers
+            episode_required_keys: set[ContextKey] = set()
+            for handler in handlers_to_run.values():
+                episode_required_keys.update(handler.required_keys)
 
             episode_data = {
                 "episode": episode,
-                "context_data": extracted_data,  # Deduplicated context
-                "handlers_info": handlers_info,  # Handler metadata, not objects
+                "context_data": {
+                    k: v for k, v in extracted_data.items() if k in episode_required_keys
+                },
+                "handlers_info": handlers_info,
             }
 
             # Add to batch
@@ -264,9 +349,62 @@ class MetricsCollector:
         # Flush remaining batch
         self._flush_batch()
 
+        # Produce end-of-training artifacts (rendered in the worker, off the
+        # training thread) BEFORE shutting the backend down so the run is active.
+        self._log_end_of_training()
+
         # Close backend
         if self.backend:
             self.backend.close()
+
+    def _log_end_of_training(self) -> None:
+        """Enqueue end-of-training handlers as a final batch for the worker.
+
+        Snapshots the cached env/values, injects the collector-computed final
+        scalars, and ships everything to the backend. All rendering / model
+        registration then happens in the worker process.
+        """
+        if not (self.backend and self._final_handlers):
+            return
+
+        training_time = time.time() - self._start_time
+        episodes_per_second = self._episode_count / training_time if training_time > 0 else 0.0
+
+        # Snapshot cached context (deep-copy pydantic env/values) + computed scalars
+        end_context: dict[ContextKey, Any] = {}
+        for context_key, value in self._final_context_cache.items():
+            end_context[context_key] = self._serialize_value(context_key, value)
+        end_context[ContextKey.TRAINING_TIME] = training_time
+        end_context[ContextKey.EPISODES_PER_SECOND] = episodes_per_second
+
+        handlers_info: dict[Any, Any] = {}
+        running_required_keys: set[ContextKey] = set()
+        for handler_key, handler in self._final_handlers.items():
+            missing_keys = handler.required_keys - end_context.keys()
+            if missing_keys:
+                warnings.warn(
+                    f"Skipping end-of-training '{handler_key}': "
+                    f"missing context keys {missing_keys}.",
+                    RuntimeWarning,
+                )
+                continue
+            handlers_info[handler_key] = {
+                "class": handler.__class__,
+                "required_keys": list(handler.required_keys),
+                "config": getattr(handler, "config", None),
+            }
+            running_required_keys.update(handler.required_keys)
+
+        if not handlers_info:
+            return
+
+        episode_data = {
+            "episode": self._last_episode,
+            "context_data": {k: v for k, v in end_context.items() if k in running_required_keys},
+            "handlers_info": handlers_info,
+        }
+        # Guaranteed delivery — end-of-training artifacts must not be dropped.
+        self.backend.log_final({"type": "batch", "episodes": [episode_data]})
 
     def _serialize_value(self, key: ContextKey, value: Any) -> Any:
         """
@@ -294,15 +432,21 @@ class MetricsCollector:
                 return value
 
         elif key == ContextKey.ENVIRONMENT:
-            # Check if environment has get_config method
-            if hasattr(value, "get_config"):
+            # Ship a deep snapshot so worker-side rendering is isolated from the
+            # live env being mutated during training (avoids the Queue feeder race).
+            if hasattr(value, "model_copy"):
+                return value.model_copy(deep=True)
+            elif hasattr(value, "get_config"):
                 return value.get_config()
             else:
                 return value
 
         elif key == ContextKey.VALUE_FUNCTION:
-            # Serialize value function
-            if hasattr(value, "get_all_values"):
+            # Prefer a deep snapshot of the Values object (needed for rendering /
+            # model registration); fall back to a dict copy for non-pydantic values.
+            if hasattr(value, "model_copy"):
+                return value.model_copy(deep=True)
+            elif hasattr(value, "get_all_values"):
                 return value.get_all_values()
             elif hasattr(value, "values"):
                 # For action-state values, get the underlying dict
@@ -316,8 +460,9 @@ class MetricsCollector:
             ContextKey.TRAJECTORY,
             ContextKey.Q_VALUES,
         ]:
-            # Lists/arrays - copy to avoid shared state
-            if hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
+            if isinstance(value, dict):
+                return dict(value)
+            elif hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
                 return list(value)
             else:
                 return value
