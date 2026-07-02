@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Auto-generated API documentation (MkDocs + Material + mkdocstrings).
 
+### Removed
+
+- Unused `WebDashboardVisualizer` hook from the n-step SARSA training loops (on-policy and off-policy); it was never implemented and is superseded by the MLflow metrics backend.
+
 ## [0.1.0] - 2026-07-02
 
 ### Added
