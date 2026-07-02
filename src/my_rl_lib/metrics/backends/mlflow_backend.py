@@ -12,6 +12,8 @@ from typing import Any
 
 from my_rl_lib.metrics.backends.base import LoggingBackend
 
+MLFLOW_TRACKING_URI = "sqlite:///mlflow.db"
+
 
 class MLflowBackend(LoggingBackend):
     """
@@ -32,11 +34,12 @@ class MLflowBackend(LoggingBackend):
 
     def __init__(
         self,
-        tracking_uri: str = "mlruns",
+        tracking_uri: str = MLFLOW_TRACKING_URI,
         experiment_name: str = "default",
         run_name: str | None = None,
         max_queue_size: int = 100,
         async_logging: bool = True,
+        shutdown_timeout: float = 180.0,
     ):
         """
         Initialize MLflow backend.
@@ -48,12 +51,17 @@ class MLflowBackend(LoggingBackend):
             max_queue_size: Max episodes in queue before dropping
             async_logging: Enable async logging (multiprocessing).
                           Set to False for debugging (runs synchronously).
+            shutdown_timeout: Max seconds to wait at close() for the worker to
+                          finish draining before force-terminating. Generous by
+                          default because end-of-training work (rendering,
+                          model registration) can take tens of seconds.
         """
         import mlflow
 
         self.tracking_uri = tracking_uri
         self.experiment_name = experiment_name
         self.async_logging = async_logging
+        self.shutdown_timeout = shutdown_timeout
 
         # Create the MLflow run in the main process
         mlflow.set_tracking_uri(tracking_uri)
@@ -85,6 +93,10 @@ class MLflowBackend(LoggingBackend):
             self.queue = None
             self.process = None
 
+    @property
+    def preferred_batch_size(self) -> int:
+        return 1
+
     def log_episode(self, episode_data: dict[str, Any]) -> None:
         """
         Log episode data (non-blocking).
@@ -105,7 +117,89 @@ class MLflowBackend(LoggingBackend):
             import numpy as np
 
             handler_cache: dict[str, Any] = {}
-            self._process_episode(self._mlflow, episode_data, np, handler_cache)
+            self._process_batch_or_episode(self._mlflow, episode_data, np, handler_cache)
+
+    def log_final(self, episode_data: dict[str, Any]) -> None:
+        """Log end-of-training data with guaranteed delivery (never dropped).
+
+        Called once at close() after training, so a blocking enqueue is fine —
+        it waits for worker capacity rather than dropping under a full queue.
+        """
+        if self.async_logging and self.queue is not None:
+            # Blocking put: guarantees the end-of-training batch reaches the worker.
+            self.queue.put(episode_data)
+        else:
+            import numpy as np
+
+            handler_cache: dict[str, Any] = {}
+            self._process_batch_or_episode(self._mlflow, episode_data, np, handler_cache)
+
+    def log_artifact(self, local_path: str, artifact_path: str | None = None) -> None:
+        """Log a local file as an MLflow artifact on the active run.
+
+        Intended for post-training artifacts (plots, animations). The run is
+        always active in the main process between __init__ and close().
+
+        Args:
+            local_path: Path to the local file to log.
+            artifact_path: Optional subdirectory within the artifact store.
+        """
+        import mlflow
+
+        mlflow.log_artifact(local_path, artifact_path=artifact_path)
+
+    def register_trained_model(self, model_name: str, values: Any) -> None:
+        """Serialize Q-values and register them in the MLflow Model Registry.
+
+        Main-process entry point (kept for direct/manual use). The same logic
+        runs in the worker via the ``model`` result type.
+
+        Args:
+            model_name: Name under which to register the model.
+            values: ActionStateValues instance; its .values dict is serialized.
+        """
+        import mlflow
+
+        MLflowBackend._log_model(mlflow, model_name, values)
+
+    @staticmethod
+    def _log_model(mlflow_module: Any, model_name: str, values: Any) -> None:
+        """Log a pyfunc model artifact holding the Q-values and register it.
+
+        Runs in whichever process is logging (main or worker); the MLflow run
+        is active in both.
+        """
+        import json
+        import os
+
+        class _QValueModel(mlflow_module.pyfunc.PythonModel):  # type: ignore[misc]
+            def load_context(self, context: Any) -> None:
+                with open(context.artifacts["q_values"]) as f:
+                    self._q_values = json.load(f)
+
+            def predict(self, context: Any, model_input: Any) -> Any:
+                return self._q_values
+
+        serializable: dict[str, Any] = {
+            str(state): {str(a): v for a, v in action_values.items()}
+            for state, action_values in values.values.items()
+        }
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", prefix="q_values_", delete=False
+        ) as tmp_file:
+            tmp_path = tmp_file.name
+            json.dump(serializable, tmp_file)
+
+        try:
+            mlflow_module.pyfunc.log_model(
+                artifact_path="model",
+                python_model=_QValueModel(),
+                artifacts={"q_values": tmp_path},
+                registered_model_name=model_name,
+            )
+        finally:
+            os.remove(tmp_path)
 
     def close(self) -> None:
         """Shutdown logging process, flush remaining data, and end MLflow run."""
@@ -120,14 +214,15 @@ class MLflowBackend(LoggingBackend):
             except queue.Full:
                 pass
 
-            self.process.join(timeout=10.0)
+            self.process.join(timeout=self.shutdown_timeout)
 
             if self.process.is_alive():
                 self.process.terminate()
                 self.process.join(timeout=2.0)
                 warnings.warn(
-                    "MLflow logging process terminated forcefully. "
-                    "Some metrics may not have been written.",
+                    "MLflow logging process terminated forcefully after "
+                    f"{self.shutdown_timeout}s. Some metrics/artifacts may not "
+                    "have been written; increase shutdown_timeout if needed.",
                     RuntimeWarning,
                 )
 
@@ -169,11 +264,7 @@ class MLflowBackend(LoggingBackend):
                     if data is None:
                         break
 
-                    if isinstance(data, dict) and data.get("type") == "batch":
-                        for ep_data in data.get("episodes", []):
-                            MLflowBackend._process_episode(mlflow, ep_data, np, handler_cache)
-                    else:
-                        MLflowBackend._process_episode(mlflow, data, np, handler_cache)
+                    MLflowBackend._process_batch_or_episode(mlflow, data, np, handler_cache)
 
         except Exception as e:
             import traceback
@@ -187,6 +278,20 @@ class MLflowBackend(LoggingBackend):
             except Exception:
                 pass
             raise
+
+    @staticmethod
+    def _process_batch_or_episode(
+        mlflow_module: Any,
+        data: dict[str, Any],
+        np: Any,
+        handler_cache: dict[str, Any],
+    ) -> None:
+        """Dispatch a queue payload that may be a single episode or a batch."""
+        if isinstance(data, dict) and data.get("type") == "batch":
+            for ep_data in data.get("episodes", []):
+                MLflowBackend._process_episode(mlflow_module, ep_data, np, handler_cache)
+        else:
+            MLflowBackend._process_episode(mlflow_module, data, np, handler_cache)
 
     @staticmethod
     def _process_episode(
@@ -214,7 +319,10 @@ class MLflowBackend(LoggingBackend):
             try:
                 if metric_key not in handler_cache:
                     handler_class = handler_info["class"]
-                    handler_cache[metric_key] = handler_class()
+                    config = handler_info.get("config")
+                    handler_cache[metric_key] = (
+                        handler_class(config=config) if config is not None else handler_class()
+                    )
 
                 handler = handler_cache[metric_key]
 
@@ -268,20 +376,24 @@ class MLflowBackend(LoggingBackend):
                             else:
                                 frame_array = frames
 
-                            with tempfile.NamedTemporaryFile(
-                                suffix=".gif", delete=False
-                            ) as tmp_file:
-                                tmp_path = tmp_file.name
+                            import os
 
-                            imageio.mimsave(tmp_path, frame_array, fps=fps)
+                            # Episode-stamped filename so periodic animations do
+                            # not overwrite each other (mlflow.log_artifact keeps
+                            # the file's basename).
+                            tmp_dir = tempfile.mkdtemp(prefix="video_")
+                            gif_path = os.path.join(
+                                tmp_dir, f"{result['tag']}_step_{episode:06d}.gif"
+                            )
+
+                            imageio.mimsave(gif_path, frame_array, fps=fps)
                             mlflow_module.log_artifact(
-                                tmp_path,
+                                gif_path,
                                 artifact_path=f"videos/{result['tag']}",
                             )
 
-                            import os
-
-                            os.remove(tmp_path)
+                            os.remove(gif_path)
+                            os.rmdir(tmp_dir)
 
                         except ImportError:
                             warnings.warn(
@@ -289,6 +401,9 @@ class MLflowBackend(LoggingBackend):
                                 "Install with: pip install imageio",
                                 RuntimeWarning,
                             )
+
+                elif result["type"] == "model":
+                    MLflowBackend._log_model(mlflow_module, result["tag"], result["values"])
 
             except Exception as e:
                 warnings.warn(f"Handler '{metric_key}' failed: {e}. Skipping.", RuntimeWarning)

@@ -1,14 +1,16 @@
+from typing import Any
+
 from my_rl_lib.learning.steps_store import EpisodeStepsCircularStore
 from my_rl_lib.values.action_state import ActionStateValues
 
 
 def compute_n_step_return(
-    store: EpisodeStepsCircularStore,
+    store: EpisodeStepsCircularStore[Any, Any],
     n: int,
     tau: int,
     T: int | float,
     gamma: float,
-    values: ActionStateValues,
+    values: ActionStateValues[Any, Any],
 ) -> float:
     """
     Compute the n-step return for SARSA algorithms.

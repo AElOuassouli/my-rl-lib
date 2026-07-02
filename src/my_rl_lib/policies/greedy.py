@@ -1,13 +1,14 @@
-from typing import Any
+from typing import Generic
 
 from my_rl_lib.policies.abstract import Policy
+from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.abstract import Values
 
 
-class Greedy(Policy):
+class Greedy(Policy[StateT, ActionT], Generic[StateT, ActionT]):
     """Greedy policy for reinforcement learning."""
 
-    def update_probabilities(self, values: Values) -> None:
+    def update_probabilities(self, values: Values[StateT, ActionT]) -> None:
         """Update action probabilities for all states using greedy strategy."""
         if self.action_probabilities_per_state is None:
             raise ValueError("Action probabilities have not been initialized.")
@@ -15,7 +16,9 @@ class Greedy(Policy):
         for state in self.action_probabilities_per_state.keys():
             self.update_probabilities_for_state(state, values)
 
-    def update_probabilities_for_state(self, state: Any, values: Values) -> None:
+    def update_probabilities_for_state(
+        self, state: StateT, values: Values[StateT, ActionT]
+    ) -> None:
         """Update action probabilities for a single state using greedy strategy."""
         if self.action_probabilities_per_state is None:
             raise ValueError("Action probabilities have not been initialized.")

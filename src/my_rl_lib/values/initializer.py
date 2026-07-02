@@ -23,7 +23,7 @@ class Initializer(BaseModel):
 
     def get_state_action_values_initializer_function(
         self,
-        environment: "Environment",
+        environment: "Environment[Any, Any]",
     ) -> Callable[[tuple[Any, Any]], float]:
         terminal_states = environment.get_terminal_states()
 

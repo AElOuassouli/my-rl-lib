@@ -12,6 +12,7 @@ from my_rl_lib.metrics import MetricsCollector
 from my_rl_lib.policies.abstract import Policy
 from my_rl_lib.policies.greedy import Greedy
 from my_rl_lib.policies.importance_sampling import compute_importance_sampling_ratio_circular_buffer
+from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.action_state import ActionStateValues
 from my_rl_lib.values.initializer import Initializer
 
@@ -20,16 +21,16 @@ if TYPE_CHECKING:
 
 
 def n_step_sarsa_off_policy(
-    environment: Environment,
+    environment: Environment[StateT, ActionT],
     num_episodes: int,
-    behavior_policy: Policy,
+    behavior_policy: Policy[StateT, ActionT],
     n: int,
     alpha: float,
     gamma: float,
     initializer: Initializer,
     metrics_collector: MetricsCollector | None = None,  # Mutable: will be populated during training
     visualizer: WebDashboardVisualizer | None = None,  # Optional: real-time web dashboard
-) -> LearningResult:
+) -> LearningResult[StateT, ActionT]:
     """
     N-step SARSA off-policy learning algorithm with importance sampling.
 
@@ -50,10 +51,10 @@ def n_step_sarsa_off_policy(
     Returns:
         Tuple of (learned values, learned target policy)
     """
-    values = ActionStateValues()
+    values: ActionStateValues[StateT, ActionT] = ActionStateValues()
     values.init_from_environment(environment=environment, initializer=initializer)
 
-    policy = Greedy()
+    policy: Greedy[StateT, ActionT] = Greedy()
     policy.init_from_environment_and_values(environment=environment, values=values)
 
     # Start visualization process if provided
@@ -66,15 +67,17 @@ def n_step_sarsa_off_policy(
         ):
             environment.reset()
 
-            store = EpisodeStepsCircularStore(n=n)
+            store: EpisodeStepsCircularStore[StateT, ActionT] = EpisodeStepsCircularStore(n=n)
             episode_reward = 0.0
             episode_steps = 0
 
+            initial_state = environment.current_state
+            assert initial_state is not None  # set by reset()
             store.set_step(
                 0,
                 LearningStep(
-                    state=environment.current_state,
-                    action=behavior_policy.select_action(environment.current_state),
+                    state=initial_state,
+                    action=behavior_policy.select_action(initial_state),
                     reward=None,
                 ),
             )
@@ -87,6 +90,7 @@ def n_step_sarsa_off_policy(
                     entry = store.get_step(t)
 
                     At = entry.action
+                    assert At is not None  # only the terminal step stores a None action
 
                     step_result = environment.step(action=At)
 

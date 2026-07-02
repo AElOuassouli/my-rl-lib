@@ -20,6 +20,16 @@ class MetricHandler(ABC):
     Handlers are stateless and define their requirements declaratively.
     """
 
+    def __init__(self, config: Any = None) -> None:
+        """Store optional handler configuration.
+
+        Most handlers are stateless and ignore ``config``. Configurable
+        handlers (e.g. animation, policy visualization) accept a typed config
+        model here. Keeping the signature uniform lets the worker process
+        re-instantiate any handler via ``handler_class(config=...)``.
+        """
+        self.config = config
+
     @property
     @abstractmethod
     def required_keys(self) -> Set[ContextKey]:

@@ -1,8 +1,11 @@
 
+.PHONY: help
 
+help: ## Show this help message
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 run-mlflow: ## Opens MLflow UI
-	mlflow ui --backend-store-uri mlruns
+	uv run mlflow ui --backend-store-uri sqlite:///mlflow.db --port 5001
 
 test: ## Run unit tests
 	uv run pytest

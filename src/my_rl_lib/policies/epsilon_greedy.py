@@ -1,24 +1,17 @@
-from typing import Any
+from typing import Generic
 
 from my_rl_lib.policies.abstract import Policy
+from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.abstract import Values
 
 
-class EpsilonGreedy(Policy):
+class EpsilonGreedy(Policy[StateT, ActionT], Generic[StateT, ActionT]):
     """Epsilon-greedy policy for reinforcement learning."""
 
     # specific to epsilon-greedy
     epsilon: float = 0.1
 
-    def init_from_environment_and_values(
-        self,
-        environment: Any,
-        values: Values,
-    ) -> None:
-        """Initialize the epsilon-greedy policy from the environment and values."""
-        super().init_from_environment_and_values(environment, values)
-
-    def update_probabilities(self, values: Values) -> None:
+    def update_probabilities(self, values: Values[StateT, ActionT]) -> None:
         """Update action probabilities for all states using epsilon-greedy strategy."""
         if self.action_probabilities_per_state is None:
             raise ValueError("Action probabilities have not been initialized.")
@@ -26,7 +19,9 @@ class EpsilonGreedy(Policy):
         for state in self.action_probabilities_per_state.keys():
             self.update_probabilities_for_state(state, values)
 
-    def update_probabilities_for_state(self, state: Any, values: Values) -> None:
+    def update_probabilities_for_state(
+        self, state: StateT, values: Values[StateT, ActionT]
+    ) -> None:
         """Update action probabilities for a single state using epsilon-greedy strategy."""
         if self.action_probabilities_per_state is None:
             raise ValueError("Action probabilities have not been initialized.")

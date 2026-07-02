@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic
 
 from pydantic import BaseModel
 
+from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.abstract import Values
 
 if TYPE_CHECKING:
@@ -24,22 +25,22 @@ class RenderPolicyOptions(str, Enum):
     GREEDY_AGENT = "greedy_agent"
 
 
-class StepResult(BaseModel):
-    next_state: Any
+class StepResult(BaseModel, Generic[StateT]):
+    next_state: StateT
     reward: float
 
 
-class Environment(BaseModel, ABC):
+class Environment(BaseModel, ABC, Generic[StateT, ActionT]):
     """Abstract base class for reinforcement learning environments."""
 
     type: EnvironmentType
     current_timestep: int | None = None
-    current_state: Any | None = None
+    current_state: StateT | None = None
 
     #######
     # Environment Info getters
     @abstractmethod
-    def get_states(self) -> list[Any]:
+    def get_states(self) -> list[StateT]:
         """Get the list of all possible states in the environment.
 
         Returns:
@@ -50,7 +51,7 @@ class Environment(BaseModel, ABC):
     @abstractmethod
     def get_actions_per_state(
         self,
-    ) -> dict[Any, list[Any]]:  # key : state, value : list of possible actions
+    ) -> dict[StateT, list[ActionT]]:  # key : state, value : list of possible actions
         """Get the mapping of states to their possible actions.
 
         Returns:
@@ -59,7 +60,7 @@ class Environment(BaseModel, ABC):
         pass
 
     @abstractmethod
-    def get_terminal_states(self) -> list[Any]:
+    def get_terminal_states(self) -> list[StateT]:
         """Get the list of terminal states in the environment.
 
         Returns:
@@ -74,7 +75,7 @@ class Environment(BaseModel, ABC):
         pass
 
     @abstractmethod
-    def get_current_possible_actions(self) -> list[Any]:
+    def get_current_possible_actions(self) -> list[ActionT]:
         """Get the list of possible actions in the environment at the current state."""
         pass
 
@@ -88,14 +89,14 @@ class Environment(BaseModel, ABC):
         pass
 
     @abstractmethod
-    def step(self, action: Any) -> StepResult:
+    def step(self, action: ActionT) -> StepResult[StateT]:
         """Take an action in the environment.
 
         Args:
             action: The action to take.
 
         Returns:
-            A tuple of (observation, reward, done, info).
+            A StepResult containing the next state and reward.
         """
         pass
 
@@ -110,7 +111,10 @@ class Environment(BaseModel, ABC):
 
     @abstractmethod
     def render_policy(
-        self, values: Values, options: list[RenderPolicyOptions], file_path: str | None = None
+        self,
+        values: Values[StateT, ActionT],
+        options: list[RenderPolicyOptions],
+        file_path: str | None = None,
     ) -> None:
         """Render the given values in the environment.
 
@@ -124,7 +128,7 @@ class Environment(BaseModel, ABC):
     @abstractmethod
     def generate_agent_animation_greedy_policy_from_values(
         self,
-        values: Values,
+        values: Values[StateT, ActionT],
         number_episodes: int,
         fps: int = 10,
         file_path: str | None = None,
@@ -140,8 +144,8 @@ class Environment(BaseModel, ABC):
         pass
 
     def simulate_greedy_agent(
-        self, policy: "Greedy", max_steps: int = 1000
-    ) -> list[tuple[Any, Any, float]]:
+        self, policy: "Greedy[StateT, ActionT]", max_steps: int = 1000
+    ) -> list[tuple[StateT | None, ActionT | None, float]]:
         """Simulate an episode in the environment using the given policy.
 
         Args:
@@ -150,7 +154,8 @@ class Environment(BaseModel, ABC):
             render: Whether to render the environment at each step.
         """
 
-        history = []  # store (state, action, reward) tuples. The index represents the timestep.
+        # store (state, action, reward) tuples. The index represents the timestep.
+        history: list[tuple[StateT | None, ActionT | None, float]] = []
 
         self.reset()
 
@@ -158,6 +163,8 @@ class Environment(BaseModel, ABC):
 
         for t in range(max_steps):
             state = self.current_state
+            if state is None:
+                raise ValueError("Environment state is None after reset/step.")
             action = policy.select_action(state)
             step_result = self.step(action)
             reward = step_result.reward

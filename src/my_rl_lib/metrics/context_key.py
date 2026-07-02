@@ -27,6 +27,10 @@ class ContextKey(str, Enum):
     EPSILON = "epsilon"
     IMPORTANCE_RATIO = "importance_ratio"
 
+    # End-of-training scalars (computed by the collector at close)
+    TRAINING_TIME = "training_time"
+    EPISODES_PER_SECOND = "episodes_per_second"
+
     # Training artifacts (for media generation)
     POLICY = "policy"
     VALUE_FUNCTION = "value_function"

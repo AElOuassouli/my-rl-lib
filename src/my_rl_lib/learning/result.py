@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic
+
+from my_rl_lib.types import ActionT, StateT
 
 if TYPE_CHECKING:
     from my_rl_lib.policies.abstract import Policy
@@ -9,17 +11,17 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class LearningResult:
+class LearningResult(Generic[StateT, ActionT]):
     """Result returned by all single-value-function learning algorithms."""
 
-    values: ActionStateValues
-    policy: Policy
+    values: ActionStateValues[StateT, ActionT]
+    policy: Policy[StateT, ActionT]
 
 
 @dataclass
-class DoubleQLearningResult:
+class DoubleQLearningResult(Generic[StateT, ActionT]):
     """Result returned by Double Q-Learning, which maintains two value functions."""
 
-    values_a: ActionStateValues
-    values_b: ActionStateValues
-    policy: Policy
+    values_a: ActionStateValues[StateT, ActionT]
+    values_b: ActionStateValues[StateT, ActionT]
+    policy: Policy[StateT, ActionT]

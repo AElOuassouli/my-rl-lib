@@ -219,3 +219,14 @@ __marimo__/
 
 # MacOs files
 .DS_Store
+
+# MLflow
+mlruns/
+mlflow.db
+
+# Generated outputs
+plots/
+animations/
+
+# Claude Code
+CLAUDE.md

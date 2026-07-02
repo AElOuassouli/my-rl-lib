@@ -5,7 +5,7 @@ from my_rl_lib.policies.abstract import Policy
 
 
 def compute_importance_sampling_ratio(
-    target_policy: Policy, behavior_policy: Policy, state: Any, action: Any
+    target_policy: Policy[Any, Any], behavior_policy: Policy[Any, Any], state: Any, action: Any
 ) -> float:
     probability_target = target_policy.get_action_probability_given_state(state, action)
     probability_behavior = behavior_policy.get_action_probability_given_state(state, action)
@@ -17,9 +17,9 @@ def compute_importance_sampling_ratio(
 
 
 def compute_importance_sampling_ratio_circular_buffer(
-    target_policy: Policy,
-    behavior_policy: Policy,
-    steps: EpisodeStepsCircularStore,  # circular buffer exposing get_step(time)
+    target_policy: Policy[Any, Any],
+    behavior_policy: Policy[Any, Any],
+    steps: EpisodeStepsCircularStore[Any, Any],  # circular buffer exposing get_step(time)
     lower_bound: int,
     upper_bound: int,
 ) -> float:

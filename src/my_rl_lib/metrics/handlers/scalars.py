@@ -110,3 +110,41 @@ class ImportanceRatioHandler(MetricHandler):
             "tag": "importance_ratio",
             "value": context_data[ContextKey.IMPORTANCE_RATIO],
         }
+
+
+class TrainingTimeHandler(MetricHandler):
+    """Handler for total training time (computed by the collector at close)."""
+
+    @property
+    def required_keys(self) -> Set[ContextKey]:
+        return {ContextKey.TRAINING_TIME}
+
+    @property
+    def metric_name(self) -> str:
+        return "training_time"
+
+    def process(self, context_data: dict[ContextKey, Any], episode: int) -> dict[str, Any]:
+        return {
+            "type": "scalar",
+            "tag": "training_time",
+            "value": context_data[ContextKey.TRAINING_TIME],
+        }
+
+
+class EpisodesPerSecondHandler(MetricHandler):
+    """Handler for training throughput (computed by the collector at close)."""
+
+    @property
+    def required_keys(self) -> Set[ContextKey]:
+        return {ContextKey.EPISODES_PER_SECOND}
+
+    @property
+    def metric_name(self) -> str:
+        return "episodes_per_second"
+
+    def process(self, context_data: dict[ContextKey, Any], episode: int) -> dict[str, Any]:
+        return {
+            "type": "scalar",
+            "tag": "episodes_per_second",
+            "value": context_data[ContextKey.EPISODES_PER_SECOND],
+        }

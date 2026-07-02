@@ -18,6 +18,10 @@ class MetricType(str, Enum):
     # Off-policy specific
     IMPORTANCE_RATIO = "importance_ratio"
 
+    # End-of-training scalars (computed by the collector at close)
+    TRAINING_TIME = "training_time"
+    EPISODES_PER_SECOND = "episodes_per_second"
+
 
 class MediaType(str, Enum):
     # Policy plots
@@ -25,3 +29,14 @@ class MediaType(str, Enum):
 
     # Values
     STATE_VISITATION_HEATMAP = "state_visitation_heatmap"
+
+    # Rendered artifacts (typically produced once at end of training)
+    GREEDY_AGENT_ANIMATION = "greedy_agent_animation"
+    POLICY_VISUALIZATION = "policy_visualization"
+
+
+class ArtifactType(str, Enum):
+    """Non-metric, non-media artifacts produced at end of training."""
+
+    # Register the trained value function in the backend's model registry
+    TRAINED_MODEL = "trained_model"

@@ -90,12 +90,15 @@ class TestMediaHandlers:
         assert "data" in result
         assert isinstance(result["data"], np.ndarray)
 
-    def test_state_visitation_heatmap_shape_matches_states(self):
+    def test_state_visitation_heatmap_renders_large_rgb_image(self):
         handler = StateVisitationHeatmapHandler()
         context = {ContextKey.STATE_VISITS: [(0, 0), (1, 2), (2, 3)]}
         result = handler.process(context, episode=0)
-        # max_x=2+1=3, max_y=3+1=4 → heatmap shape = (4, 3)
-        assert result["data"].shape == (4, 3)
+        data = result["data"]
+        # Rendered as a readable RGB image (H, W, 3), not the tiny raw grid.
+        assert data.ndim == 3 and data.shape[2] == 3
+        assert data.dtype == np.uint8
+        assert data.shape[0] >= 100 and data.shape[1] >= 100
 
     def test_state_visitation_empty_visits_returns_zeros(self):
         handler = StateVisitationHeatmapHandler()
