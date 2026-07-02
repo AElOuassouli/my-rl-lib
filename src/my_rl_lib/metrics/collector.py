@@ -24,6 +24,7 @@ from my_rl_lib.metrics.handlers import (
     ValueFunctionHeatmapHandler,
 )
 from my_rl_lib.metrics.metric_type import ArtifactType, MediaType, MetricType
+from my_rl_lib.metrics.settings import MetricCollectionSettings
 
 # Default handlers for standard metrics
 DEFAULT_HANDLERS: dict[MetricType, MetricHandler] = {
@@ -63,7 +64,11 @@ class MetricsCollector:
 
     def __init__(
         self,
-        track: dict[MetricType | MediaType, int] | list[MetricType | MediaType] | None = None,
+        track: (
+            dict[MetricType | MediaType, MetricCollectionSettings | int]
+            | list[MetricType | MediaType]
+            | None
+        ) = None,
         track_at_end: dict[Any, Any] | list[Any] | None = None,
         backend: LoggingBackend | None = None,
         custom_handlers: dict[str, MetricHandler] | None = None,
@@ -74,10 +79,12 @@ class MetricsCollector:
         Initialize metrics collector.
 
         Args:
-            track: Periodic metrics to track with logging frequency.
-                   Can be:
-                   - dict[MetricType | MediaType, int]: {metric: log_every_n_episodes}
-                   - list[MetricType | MediaType]: All logged every episode
+            track: Periodic metrics to track. A dict mapping each metric/media
+                   type to a MetricCollectionSettings (logging frequency + an
+                   optional handler override). An int value is accepted as
+                   shorthand for MetricCollectionSettings(frequency=int). Can be:
+                   - dict[MetricType | MediaType, MetricCollectionSettings | int]
+                   - list[MetricType | MediaType]: all logged every episode
                    - None: Default metrics (episode_reward, episode_steps) every episode
             track_at_end: Artifacts produced once at the end of training (in the
                    backend worker process, off the training thread). Can be:
@@ -105,18 +112,29 @@ class MetricsCollector:
             ...     backend=MLflowBackend(experiment_name="exp1"),
             ... )
         """
-        # Parse track parameter
+        # Parse track parameter into per-metric settings.
+        # Each value may be a MetricCollectionSettings, or an int (shorthand for
+        # MetricCollectionSettings(frequency=int)).
         if track is None:
-            clean_track: dict[MetricType | MediaType, int] = {
-                MetricType.EPISODE_REWARD: 1,
-                MetricType.EPISODE_STEPS: 1,
+            clean_track: dict[MetricType | MediaType, MetricCollectionSettings] = {
+                MetricType.EPISODE_REWARD: MetricCollectionSettings(),
+                MetricType.EPISODE_STEPS: MetricCollectionSettings(),
             }
         elif isinstance(track, list):
-            clean_track = {metric: 1 for metric in track}
+            clean_track = {metric: MetricCollectionSettings() for metric in track}
         else:
-            clean_track = track
+            clean_track = {
+                metric: (
+                    value
+                    if isinstance(value, MetricCollectionSettings)
+                    else MetricCollectionSettings(frequency=value)
+                )
+                for metric, value in track.items()
+            }
 
-        self._metric_frequencies = clean_track
+        self._metric_frequencies: dict[MetricType | MediaType, int] = {
+            metric: settings.frequency for metric, settings in clean_track.items()
+        }
 
         # Resolve batch_size: use backend's preference when not explicitly set
         if batch_size is None:
@@ -125,16 +143,24 @@ class MetricsCollector:
         # Build handler registry (periodic handlers)
         self._handlers: dict[MetricType | MediaType, MetricHandler] = {}
 
-        for metric_key in clean_track.keys():
-            if isinstance(metric_key, MetricType) and metric_key in DEFAULT_HANDLERS:
+        for metric_key, settings in clean_track.items():
+            if settings.handler is not None:
+                # Per-metric handler override (configured animation, etc.)
+                self._handlers[metric_key] = settings.handler
+            elif isinstance(metric_key, MetricType) and metric_key in DEFAULT_HANDLERS:
                 # Use default handler
                 self._handlers[metric_key] = DEFAULT_HANDLERS[metric_key]
             elif isinstance(metric_key, MediaType) and metric_key in MEDIA_HANDLERS:
                 # Use built-in media handler
                 self._handlers[metric_key] = MEDIA_HANDLERS[metric_key]
             elif custom_handlers and metric_key in custom_handlers:
-                # Use custom handler
+                # Backward-compatible custom-handler map
                 self._handlers[metric_key] = custom_handlers[metric_key]
+            elif metric_key in END_OF_TRAINING_HANDLERS:
+                # Render-capable handlers (animation, policy viz, ...) can also be
+                # used periodically; instantiate with default config. Provide a
+                # configured instance via the settings handler to override.
+                self._handlers[metric_key] = END_OF_TRAINING_HANDLERS[metric_key]()
             # If no handler found, we'll try direct context lookup later
 
         # Build end-of-training handler registry, instantiating with per-item config
@@ -327,12 +353,24 @@ class MetricsCollector:
                 "handlers_info": handlers_info,
             }
 
-            # Add to batch
-            self._episode_batch.append(episode_data)
-
-            # Send batch when full
-            if len(self._episode_batch) >= self._batch_size:
+            # Media/artifact handlers are infrequent but important, so they must
+            # not be dropped under queue pressure (unlike high-frequency scalars,
+            # where the drop-on-full strategy protects training throughput).
+            # Deliver such episodes with a guaranteed (blocking) enqueue.
+            contains_media = any(
+                isinstance(key, (MediaType, ArtifactType)) for key in handlers_to_run
+            )
+            if contains_media:
+                # Preserve ordering of any pending droppable episodes first.
                 self._flush_batch()
+                self.backend.log_final({"type": "batch", "episodes": [episode_data]})
+            else:
+                # Add to batch
+                self._episode_batch.append(episode_data)
+
+                # Send batch when full
+                if len(self._episode_batch) >= self._batch_size:
+                    self._flush_batch()
 
     def _flush_batch(self) -> None:
         """Flush accumulated episode batch to backend."""

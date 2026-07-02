@@ -8,41 +8,43 @@ from my_rl_lib.learning.result import DoubleQLearningResult
 from my_rl_lib.metrics.collector import MetricsCollector
 from my_rl_lib.metrics.context_key import ContextKey
 from my_rl_lib.policies.epsilon_greedy import EpsilonGreedy
+from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.action_state import ActionStateValues
 from my_rl_lib.values.initializer import Initializer
 
 
 def double_q_learning(
-    environment: Environment,
+    environment: Environment[StateT, ActionT],
     num_episodes: int,
     alpha: float,
     gamma: float,
     epsilon: float,
     initializer: Initializer,
     metrics_collector: MetricsCollector | None = None,
-) -> DoubleQLearningResult:
+) -> DoubleQLearningResult[StateT, ActionT]:
     # Initialize action-state values for
 
-    values_1 = ActionStateValues()
+    values_1: ActionStateValues[StateT, ActionT] = ActionStateValues()
     values_1.init_from_environment(environment, initializer)
 
-    values_2 = ActionStateValues()
+    values_2: ActionStateValues[StateT, ActionT] = ActionStateValues()
     values_2.init_from_environment(environment, initializer)
 
     values_behavior_policy = values_1.add(values_2)
-    behavior_policy = EpsilonGreedy(epsilon=epsilon)
+    behavior_policy: EpsilonGreedy[StateT, ActionT] = EpsilonGreedy(epsilon=epsilon)
     behavior_policy.init_from_environment_and_values(environment, values_behavior_policy)
 
-    all_state_visits: dict[Any, int] = {}
+    all_state_visits: dict[StateT, int] = {}
 
     for episode in trange(num_episodes, desc="Double Q-Learning Episodes", unit="episode"):
         environment.reset()
         episode_reward = 0.0
         episode_steps = 0
-        episode_state_visits: list[Any] = []
+        episode_state_visits: list[StateT] = []
 
         while not environment.is_current_state_terminal():
             St = environment.current_state
+            assert St is not None  # non-terminal loop guarantees a current state
             episode_state_visits.append(St)
 
             At = behavior_policy.select_action(St)

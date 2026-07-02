@@ -1,11 +1,15 @@
 from abc import ABC, abstractmethod
 from functools import wraps
 from random import choices
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Generic
 
 from pydantic import BaseModel
 
+from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.abstract import Values
+
+if TYPE_CHECKING:
+    from my_rl_lib.environments.abstract import Environment
 
 # Default tolerance for probability validation
 PROBABILITY_VALIDATION_TOLERANCE = 1e-6
@@ -29,7 +33,7 @@ def validate_probabilities(
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         @wraps(func)
-        def wrapper(self: "Policy", *args: Any, **kwargs: Any) -> Any:
+        def wrapper(self: "Policy[Any, Any]", *args: Any, **kwargs: Any) -> Any:
             result = func(self, *args, **kwargs)
 
             if self.action_probabilities_per_state is not None:
@@ -49,15 +53,15 @@ def validate_probabilities(
     return decorator
 
 
-class Policy(BaseModel, ABC):
+class Policy(BaseModel, ABC, Generic[StateT, ActionT]):
     """Abstract base class for policies in reinforcement learning."""
 
-    action_probabilities_per_state: dict[Any, dict[Any, float]] | None = None
+    action_probabilities_per_state: dict[StateT, dict[ActionT, float]] | None = None
 
     def init_from_environment_and_values(
         self,
-        environment: Any,
-        values: Values,
+        environment: "Environment[StateT, ActionT]",
+        values: Values[StateT, ActionT],
     ) -> None:
         """Initialize the policy from the environment and values."""
         actions_per_state = environment.get_actions_per_state()
@@ -68,7 +72,7 @@ class Policy(BaseModel, ABC):
 
         self.update_probabilities(values)
 
-    def get_action_probability_given_state(self, state: Any, action: Any) -> float:
+    def get_action_probability_given_state(self, state: StateT, action: ActionT) -> float:
         """Get the probability of selecting a given action in a given state."""
         if self.action_probabilities_per_state is None:
             raise ValueError("Action probabilities have not been initialized.")
@@ -78,7 +82,7 @@ class Policy(BaseModel, ABC):
 
         return self.action_probabilities_per_state[state].get(action, 0.0)
 
-    def select_action(self, state: Any) -> Any:
+    def select_action(self, state: StateT) -> ActionT:
         """Select an action based on the policy's action probabilities for the given state."""
         if self.action_probabilities_per_state is None:
             raise ValueError("Action probabilities have not been initialized.")
@@ -98,11 +102,13 @@ class Policy(BaseModel, ABC):
 
     @abstractmethod
     @validate_probabilities()
-    def update_probabilities(self, values: Values) -> None:
+    def update_probabilities(self, values: Values[StateT, ActionT]) -> None:
         """Update probabilities for all states."""
         pass
 
     @abstractmethod
-    def update_probabilities_for_state(self, state: Any, values: Values) -> None:
+    def update_probabilities_for_state(
+        self, state: StateT, values: Values[StateT, ActionT]
+    ) -> None:
         """Update probabilities for a single state only (incremental update)."""
         pass

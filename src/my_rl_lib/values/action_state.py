@@ -1,14 +1,15 @@
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic
 
-from my_rl_lib.environments.abstract import Environment
+from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.abstract import Values, ValuesType
 from my_rl_lib.values.initializer import Initializer
 
 if TYPE_CHECKING:
+    from my_rl_lib.environments.abstract import Environment
     from my_rl_lib.policies.abstract import Policy
 
 
-class ActionStateValues(Values):
+class ActionStateValues(Values[StateT, ActionT], Generic[StateT, ActionT]):
     # action-state values nested dictionary
     # represents Q(s, a)
     # Outer keys are states
@@ -16,10 +17,11 @@ class ActionStateValues(Values):
     # Structure: {state: {action: value}}
 
     type: ValuesType = ValuesType.ACTION_STATE_VALUES
+    values: dict[StateT, dict[ActionT, float]] | None = None
 
     def init_from_environment(
         self,
-        environment: Environment,
+        environment: "Environment[StateT, ActionT]",
         initializer: Initializer,
     ) -> None:
         """
@@ -83,7 +85,7 @@ class ActionStateValues(Values):
 
         self.values[state][action] = value
 
-    def get_max_action_and_value(self, state: Any) -> tuple[Any, float]:
+    def get_max_action_and_value(self, state: StateT) -> tuple[ActionT, float]:
         """
         Get the action with the maximum value for a given state.
 
@@ -105,15 +107,15 @@ class ActionStateValues(Values):
             raise ValueError(f"No possible actions found for state {state}.")
 
         # Much cleaner with max() on dict items
-        best_action = max(state_actions, key=state_actions.get)
+        best_action = max(state_actions, key=lambda action: state_actions[action])
         best_value = state_actions[best_action]
 
         return best_action, best_value
 
     def get_expected_value(
         self,
-        state: Any,
-        policy: "Policy",
+        state: StateT,
+        policy: "Policy[StateT, ActionT]",
     ) -> float:
         """
         Get the expected value for a given state under a specified policy.
@@ -142,7 +144,7 @@ class ActionStateValues(Values):
 
         return expected_value
 
-    def add(self, other: "Values") -> "Values":
+    def add(self, other: "Values[StateT, ActionT]") -> "ActionStateValues[StateT, ActionT]":
         """
         Add two ActionStateValues objects together.
 
@@ -158,7 +160,7 @@ class ActionStateValues(Values):
         if self.values is None or other.values is None:
             raise ValueError("Both ActionStateValues must be initialized before addition.")
 
-        result = ActionStateValues()
+        result: ActionStateValues[StateT, ActionT] = ActionStateValues()
         result.values = {}
 
         for state in self.values.keys():

@@ -378,10 +378,13 @@ class MLflowBackend(LoggingBackend):
 
                             import os
 
-                            # Use a stable, human-readable artifact filename
-                            # (mlflow.log_artifact keeps the file's basename).
+                            # Episode-stamped filename so periodic animations do
+                            # not overwrite each other (mlflow.log_artifact keeps
+                            # the file's basename).
                             tmp_dir = tempfile.mkdtemp(prefix="video_")
-                            gif_path = os.path.join(tmp_dir, f"{result['tag']}.gif")
+                            gif_path = os.path.join(
+                                tmp_dir, f"{result['tag']}_step_{episode:06d}.gif"
+                            )
 
                             imageio.mimsave(gif_path, frame_array, fps=fps)
                             mlflow_module.log_artifact(

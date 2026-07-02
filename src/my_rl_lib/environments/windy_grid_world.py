@@ -13,6 +13,10 @@ from my_rl_lib.values.abstract import Values, ValuesType
 
 from .abstract import Environment, EnvironmentType, RenderMode, RenderPolicyOptions, StepResult
 
+# Grid world states and actions are (row, col) integer tuples.
+GridState = tuple[int, int]
+GridAction = tuple[int, int]
+
 DEFAULT_HEIGHT = 10
 DEFAULT_WIDTH = 10
 DEFAULT_WIND_STRENGTH_BY_COLUMN = {3: 1, 4: 1, 5: 1, 6: 2, 7: 2, 8: 1}
@@ -25,7 +29,7 @@ class WindyGridWorlType(str, Enum):
     KINGS_MOVE = "kings_move"
 
 
-class WindyGridWorld(Environment):
+class WindyGridWorld(Environment[GridState, GridAction]):
     """Windy Grid World environment.
 
     A simple grid world environment with wind effects.
@@ -173,7 +177,7 @@ class WindyGridWorld(Environment):
         """
         return self.current_state == self.goal_cell
 
-    def step(self, action: tuple[int, int]) -> StepResult:
+    def step(self, action: GridAction) -> StepResult[GridState]:
         """Take an action in the environment.
 
         Args:
@@ -232,7 +236,7 @@ class WindyGridWorld(Environment):
         else:
             reward = self.step_reward
 
-        return StepResult(next_state=self.current_state, reward=reward)
+        return StepResult[GridState](next_state=self.current_state, reward=reward)
 
     def render(self, mode: RenderMode = RenderMode.HUMAN) -> None:
         """Render the environment.
@@ -428,7 +432,7 @@ class WindyGridWorld(Environment):
                         zorder=2,
                     )
 
-    def __render_values(self, ax: Any, values: "Values") -> None:
+    def __render_values(self, ax: Any, values: "Values[GridState, GridAction]") -> None:
         """Render policy values on the grid.
 
         Args:
@@ -441,7 +445,7 @@ class WindyGridWorld(Environment):
         elif values.type == ValuesType.ACTION_STATE_VALUES:
             self.__render_action_state_values(ax, values)
 
-    def __render_state_values(self, ax: Any, values: Values) -> None:
+    def __render_state_values(self, ax: Any, values: Values[GridState, GridAction]) -> None:
         """Render state values in the center of cells.
 
         Args:
@@ -464,7 +468,7 @@ class WindyGridWorld(Environment):
                         color="black",
                     )
 
-    def __render_action_state_values(self, ax: Any, values: Values) -> None:
+    def __render_action_state_values(self, ax: Any, values: Values[GridState, GridAction]) -> None:
         """Render action-state values in wedges dividing each cell.
 
         Args:
@@ -614,22 +618,25 @@ class WindyGridWorld(Environment):
 
         return action_wedges, action_text_positions, font_size
 
-    def __render_greedy_agent(self, ax: Any, values: Values) -> tuple[int, float]:
+    def __render_greedy_agent(
+        self, ax: Any, values: Values[GridState, GridAction], max_steps: int = 1000
+    ) -> tuple[int, float]:
         """Render greedy agent trajectory by simulating an episode.
 
         Args:
             ax: The matplotlib axis to draw on.
             values: The values object to use for creating a greedy policy.
+            max_steps: Cap on the simulated greedy rollout length.
 
         Returns:
             Tuple of (number of steps, total reward).
         """
         # Create a greedy policy from the values
-        greedy_policy = Greedy()
+        greedy_policy: Greedy[GridState, GridAction] = Greedy()
         greedy_policy.init_from_environment_and_values(self, values)
 
         # Simulate a greedy episode
-        history = self.simulate_greedy_agent(greedy_policy, max_steps=1000)
+        history = self.simulate_greedy_agent(greedy_policy, max_steps=max_steps)
 
         # Calculate total reward
         total_reward = sum(reward for _, _, reward in history)
@@ -758,8 +765,9 @@ class WindyGridWorld(Environment):
 
     def _build_policy_figure(
         self,
-        values: Values,
+        values: Values[GridState, GridAction],
         options: list[RenderPolicyOptions],
+        max_steps: int = 1000,
     ) -> Any:
         """Build (but do not save/show) the policy figure for the given options.
 
@@ -802,7 +810,7 @@ class WindyGridWorld(Environment):
 
             elif option == RenderPolicyOptions.GREEDY_AGENT:
                 self.__render_wind(ax)
-                num_steps, total_reward = self.__render_greedy_agent(ax, values)
+                num_steps, total_reward = self.__render_greedy_agent(ax, values, max_steps)
                 title = f"Greedy Agent (Steps: {num_steps}, Reward: {total_reward:.1f})"
                 self.__setup_axis(ax, title, show_trajectory_legend=True)
 
@@ -815,10 +823,11 @@ class WindyGridWorld(Environment):
 
     def render_policy(
         self,
-        values: Values,
+        values: Values[GridState, GridAction],
         options: list[RenderPolicyOptions],
         file_path: str | None = None,
         log_to_mlflow: bool = False,
+        max_steps: int = 1000,
     ) -> None:
         """Render the given values in the environment.
 
@@ -826,8 +835,9 @@ class WindyGridWorld(Environment):
             values: The values to render.
             options: List of rendering options (VALUES, GREEDY_ACTIONS).
             file_path: Optional path to save the figure.
+            max_steps: Cap on the greedy-trajectory rollout length.
         """
-        fig = self._build_policy_figure(values, options)
+        fig = self._build_policy_figure(values, options, max_steps=max_steps)
 
         # Save or show the figure
         if file_path is not None:
@@ -857,8 +867,9 @@ class WindyGridWorld(Environment):
 
     def render_policy_array(
         self,
-        values: Values,
+        values: Values[GridState, GridAction],
         options: list[RenderPolicyOptions] | None = None,
+        max_steps: int = 1000,
     ) -> np.ndarray:
         """Render the policy figure to an RGB numpy array (no file I/O).
 
@@ -868,6 +879,7 @@ class WindyGridWorld(Environment):
         Args:
             values: The values to render.
             options: Rendering options; defaults to values + greedy trajectory.
+            max_steps: Cap on the greedy-trajectory rollout length.
 
         Returns:
             A ``(H, W, 3)`` uint8 RGB image array.
@@ -877,7 +889,7 @@ class WindyGridWorld(Environment):
         if options is None:
             options = [RenderPolicyOptions.VALUES, RenderPolicyOptions.GREEDY_AGENT]
 
-        fig = self._build_policy_figure(values, options)
+        fig = self._build_policy_figure(values, options, max_steps=max_steps)
         canvas: Any = FigureCanvasAgg(fig)
         canvas.draw()
         image = np.asarray(canvas.buffer_rgba())[..., :3].copy()
@@ -886,8 +898,9 @@ class WindyGridWorld(Environment):
 
     def _build_greedy_episode_frames(
         self,
-        values: Values,
+        values: Values[GridState, GridAction],
         number_episodes: int,
+        max_steps: int = 1000,
     ) -> tuple[list[Any], list[Any]]:
         """Simulate greedy episodes and flatten them into per-step frame specs.
 
@@ -895,12 +908,12 @@ class WindyGridWorld(Environment):
             Tuple ``(all_episodes, frames)`` where each frame is
             ``(episode_idx, step_idx, state, next_action, reward, is_terminal)``.
         """
-        greedy_policy = Greedy()
+        greedy_policy: Greedy[GridState, GridAction] = Greedy()
         greedy_policy.init_from_environment_and_values(self, values)
 
         all_episodes = []
         for _ in range(number_episodes):
-            history = self.simulate_greedy_agent(greedy_policy, max_steps=1000)
+            history = self.simulate_greedy_agent(greedy_policy, max_steps=max_steps)
             all_episodes.append(history)
 
         frames = []
@@ -978,11 +991,12 @@ class WindyGridWorld(Environment):
 
     def generate_agent_animation_greedy_policy_from_values(
         self,
-        values: Values,
+        values: Values[GridState, GridAction],
         number_episodes: int,
         fps: int = 10,
         file_path: str | None = None,
         log_to_mlflow: bool = False,
+        max_steps: int = 1000,
     ) -> None:
         """Generate an animation of a greedy agent acting in the environment.
 
@@ -993,13 +1007,16 @@ class WindyGridWorld(Environment):
             number_episodes: Number of episodes to generate and animate.
             fps: Frames per second for the animation.
             file_path: The path to save the animation file. If None, defaults to 'agent_animation.mp4'.
+            max_steps: Cap on the greedy rollout length per episode.
         """
         from matplotlib.animation import FFMpegWriter, FuncAnimation
 
         if file_path is None:
             file_path = "agent_animation.mp4"
 
-        all_episodes, frames = self._build_greedy_episode_frames(values, number_episodes)
+        all_episodes, frames = self._build_greedy_episode_frames(
+            values, number_episodes, max_steps=max_steps
+        )
 
         # Create figure and axis for animation
         fig, ax = plt.subplots(figsize=(self.grid_width * 0.8, self.grid_height * 0.8), dpi=150)
@@ -1038,8 +1055,9 @@ class WindyGridWorld(Environment):
 
     def render_greedy_agent_frames(
         self,
-        values: Values,
+        values: Values[GridState, GridAction],
         number_episodes: int = 3,
+        max_steps: int = 1000,
     ) -> list[np.ndarray]:
         """Render greedy-agent episodes into a list of RGB numpy frames.
 
@@ -1050,13 +1068,16 @@ class WindyGridWorld(Environment):
         Args:
             values: The values to use for creating a greedy policy.
             number_episodes: Number of episodes to simulate and animate.
+            max_steps: Cap on the greedy rollout length per episode.
 
         Returns:
             List of ``(H, W, 3)`` uint8 RGB frame arrays.
         """
         from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-        all_episodes, frames = self._build_greedy_episode_frames(values, number_episodes)
+        all_episodes, frames = self._build_greedy_episode_frames(
+            values, number_episodes, max_steps=max_steps
+        )
 
         fig, ax = plt.subplots(figsize=(self.grid_width * 0.8, self.grid_height * 0.8), dpi=150)
         canvas: Any = FigureCanvasAgg(fig)

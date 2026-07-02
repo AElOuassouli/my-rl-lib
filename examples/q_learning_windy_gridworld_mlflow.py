@@ -7,10 +7,15 @@ on the Windy Grid World environment with comprehensive MLflow logging.
 Key features demonstrated:
 - Q-Learning off-policy training using the library's built-in algorithm
 - MLflow parameters logging (hyperparameters)
-- MLflow metrics logging (episode rewards, steps, epsilon)
-- State visitation heatmap images logged every 500 episodes
-- Value function heatmap images logged every 500 episodes
-- GIF animation saved as artifact
+- Per-episode scalar metrics (episode reward, steps)
+- State visitation & value function heatmaps logged every 500 episodes
+- A periodic greedy-agent animation (with a small max_steps cap so early,
+  near-random rollouts stay cheap to render)
+- End-of-training artifacts produced automatically by the collector at close():
+  a full greedy animation, a policy visualization, final scalars
+  (training_time, episodes_per_second), and a registered model
+
+All media is rendered in the backend worker process, off the training thread.
 """
 
 import time
@@ -20,9 +25,11 @@ import mlflow
 from my_rl_lib.environments.windy_grid_world import WindyGridWorld
 from my_rl_lib.learning.off_policy.q_learning import q_learning
 from my_rl_lib.metrics import (
+    AgentAnimationHandler,
     AnimationConfig,
     ArtifactType,
     MediaType,
+    MetricCollectionSettings,
     MetricsCollector,
     MetricType,
     MLflowBackend,
@@ -91,18 +98,32 @@ def main():
         tracking_uri="sqlite:///mlflow.db",
         experiment_name="q_learning_windy_gridworld",
         run_name=run_name,
+        max_queue_size=500,
     )
 
     collector = MetricsCollector(
         track={
+            # Simple items: an int is shorthand for
+            # MetricCollectionSettings(frequency=n).
             MetricType.EPISODE_REWARD: 1,
             MetricType.EPISODE_STEPS: 1,
+            # Heatmaps every 500 episodes (rendered in the worker process).
             MediaType.STATE_VISITATION_HEATMAP: 500,
             MediaType.VALUE_FUNCTION_HEATMAP: 500,
+            # Periodic greedy-agent animation with a per-metric handler override:
+            # a single short clip with a small max_steps cap so early-training
+            # rollouts (near-random greedy policy) stay fast to render.
+            MediaType.GREEDY_AGENT_ANIMATION: MetricCollectionSettings(
+                frequency=10000,
+                handler=AgentAnimationHandler(
+                    AnimationConfig(number_episodes=1, fps=10, max_steps=50)
+                ),
+            ),
         },
         track_at_end={
             # All produced once at close(), rendered in the backend worker
             # process (off the training thread) — no post-training code needed.
+            # The final policy has converged, so the full-length rollout is cheap.
             MediaType.GREEDY_AGENT_ANIMATION: AnimationConfig(number_episodes=3, fps=10),
             MediaType.POLICY_VISUALIZATION: PolicyVizConfig(),
             ArtifactType.TRAINED_MODEL: TrainedModelConfig(model_name="windy_gridworld_q_values"),
@@ -110,7 +131,7 @@ def main():
             MetricType.EPISODES_PER_SECOND: None,
         },
         backend=backend,
-        # batch_size auto-resolved to 1 from MLflowBackend.preferred_batch_size
+        batch_size=100,
     )
 
     # Log hyperparameters — run is active after MLflowBackend creation
@@ -198,9 +219,10 @@ def main():
     print()
     print("What you will see:")
     print("  ✓ Parameters: num_episodes, alpha, gamma, epsilon, grid dimensions")
-    print("  ✓ Metrics: episode_reward, episode_steps, epsilon (over time)")
-    print("  ✓ Images: state visitation heatmap, value function heatmap")
-    print("  ✓ Artifacts: animations/final_agent_animation.gif, plots/final_policy.png")
+    print("  ✓ Metrics: episode_reward, episode_steps, training_time, episodes_per_second")
+    print("  ✓ Images: images/state_heatmap, images/value_function (every 500 episodes),")
+    print("            images/policy_visualization (final)")
+    print("  ✓ Videos: videos/greedy_agent_animation (periodic clips + final)")
     print("  ✓ Registered model: windy_gridworld_q_values (Model Registry)")
     print()
     print(f"  Run name: {run_name}")

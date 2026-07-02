@@ -7,19 +7,20 @@ from my_rl_lib.learning.result import LearningResult
 from my_rl_lib.metrics.collector import MetricsCollector
 from my_rl_lib.metrics.context_key import ContextKey
 from my_rl_lib.policies.epsilon_greedy import EpsilonGreedy
+from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.action_state import ActionStateValues
 from my_rl_lib.values.initializer import Initializer
 
 
 def expected_sarsa(
-    environment: Environment,
+    environment: Environment[StateT, ActionT],
     num_episodes: int,
     alpha: float,
     gamma: float,
     epsilon: float,  # epsilon-greedy parameter for action selection
     initializer: Initializer,
     metrics_collector: MetricsCollector | None = None,
-) -> LearningResult:
+) -> LearningResult[StateT, ActionT]:
     if num_episodes <= 0:
         raise ValueError("num_episodes must be a positive integer.")
     if not (0 < alpha <= 1):
@@ -30,27 +31,28 @@ def expected_sarsa(
         raise ValueError("epsilon must be in the range [0, 1].")
 
     # Initialize action-state values
-    values = ActionStateValues()
+    values: ActionStateValues[StateT, ActionT] = ActionStateValues()
     values.init_from_environment(environment, initializer)
 
     # initialize greedy policy (target policy)
-    policy_greedy = EpsilonGreedy(epsilon=0.0)
+    policy_greedy: EpsilonGreedy[StateT, ActionT] = EpsilonGreedy(epsilon=0.0)
     policy_greedy.init_from_environment_and_values(environment, values)
 
     # Initialize epsilon-greedy policy (behavior policy)
-    policy_epsilon_greedy = EpsilonGreedy(epsilon=epsilon)
+    policy_epsilon_greedy: EpsilonGreedy[StateT, ActionT] = EpsilonGreedy(epsilon=epsilon)
     policy_epsilon_greedy.init_from_environment_and_values(environment, values)
 
-    all_state_visits: dict[Any, int] = {}
+    all_state_visits: dict[StateT, int] = {}
 
     for episode in trange(num_episodes, desc="Expected SARSA Episodes", unit="episode"):
         environment.reset()
         episode_reward = 0.0
         episode_steps = 0
-        episode_state_visits: list[Any] = []
+        episode_state_visits: list[StateT] = []
 
         while not environment.is_current_state_terminal():
             St = environment.current_state
+            assert St is not None  # non-terminal loop guarantees a current state
             episode_state_visits.append(St)
 
             At = policy_epsilon_greedy.select_action(St)

@@ -13,6 +13,10 @@ class AnimationConfig(BaseModel):
 
     number_episodes: PositiveInt = 3
     fps: PositiveInt = 10
+    # Cap on greedy-rollout length per episode. Early in training the greedy
+    # policy is near-random and rarely reaches the goal, so a lower cap keeps
+    # animation generation fast instead of running the full rollout each time.
+    max_steps: PositiveInt = 1000
 
 
 class PolicyVizConfig(BaseModel):
@@ -22,6 +26,9 @@ class PolicyVizConfig(BaseModel):
     package stays decoupled from concrete environments; the environment uses
     its own sensible default rendering options.
     """
+
+    # Cap on the greedy-trajectory rollout length (see AnimationConfig.max_steps).
+    max_steps: PositiveInt = 1000
 
 
 class TrainedModelConfig(BaseModel):

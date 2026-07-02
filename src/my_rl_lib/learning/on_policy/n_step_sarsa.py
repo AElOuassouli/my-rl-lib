@@ -10,6 +10,7 @@ from my_rl_lib.learning.result import LearningResult
 from my_rl_lib.learning.steps_store import EpisodeStepsCircularStore, LearningStep
 from my_rl_lib.metrics import MetricsCollector
 from my_rl_lib.policies.epsilon_greedy import EpsilonGreedy
+from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.action_state import ActionStateValues
 from my_rl_lib.values.initializer import Initializer
 
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
 
 
 def n_step_sarsa(
-    environment: Environment,
+    environment: Environment[StateT, ActionT],
     num_episodes: int,
     n: int,
     alpha: float,
@@ -27,7 +28,7 @@ def n_step_sarsa(
     epsilon: float = 0.1,
     metrics_collector: MetricsCollector | None = None,  # Mutable: will be populated during training
     visualizer: WebDashboardVisualizer | None = None,  # Optional: real-time web dashboard
-) -> LearningResult:
+) -> LearningResult[StateT, ActionT]:
     """
     N-step SARSA on-policy learning algorithm.
 
@@ -49,10 +50,10 @@ def n_step_sarsa(
     Returns:
         Tuple of (learned values, learned policy)
     """
-    values = ActionStateValues()
+    values: ActionStateValues[StateT, ActionT] = ActionStateValues()
     values.init_from_environment(environment, initializer)
 
-    epsilon_greedy_policy = EpsilonGreedy(epsilon=epsilon)
+    epsilon_greedy_policy: EpsilonGreedy[StateT, ActionT] = EpsilonGreedy(epsilon=epsilon)
     epsilon_greedy_policy.init_from_environment_and_values(environment, values)
 
     # Start visualization process if provided
@@ -61,7 +62,7 @@ def n_step_sarsa(
 
     try:
         for episode in trange(num_episodes, desc="N-Step SARSA Episodes", unit="episode"):
-            store = EpisodeStepsCircularStore(n=n)
+            store: EpisodeStepsCircularStore[StateT, ActionT] = EpisodeStepsCircularStore(n=n)
 
             environment.reset()
             episode_reward = 0.0
@@ -69,11 +70,13 @@ def n_step_sarsa(
             T = float("inf")
             t = 0
 
+            initial_state = environment.current_state
+            assert initial_state is not None  # set by reset()
             store.set_step(
                 0,
                 LearningStep(
-                    state=environment.current_state,
-                    action=epsilon_greedy_policy.select_action(environment.current_state),
+                    state=initial_state,
+                    action=epsilon_greedy_policy.select_action(initial_state),
                     reward=None,
                 ),
             )
@@ -82,6 +85,7 @@ def n_step_sarsa(
                 if t < T:
                     entry = store.get_step(t)
                     At = entry.action
+                    assert At is not None  # only the terminal step stores a None action
                     step_result = environment.step(action=At)
 
                     St1 = step_result.next_state

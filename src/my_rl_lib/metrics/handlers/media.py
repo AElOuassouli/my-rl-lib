@@ -26,6 +26,56 @@ def _as_value_dict(value: Any) -> Any:
     return value
 
 
+def _render_heatmap_image(grid: Any, title: str, cmap: str = "viridis") -> Any:
+    """Render a 2D grid as a labelled heatmap RGB image (runs in the worker).
+
+    Logging the raw ``(H, W)`` array yields an ``H×W``-pixel PNG (tiny for a
+    small grid). Rendering via matplotlib produces a readable, colour-barred
+    figure with per-cell value annotations for small grids.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")  # non-interactive; safe in the worker process
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    height, width = grid.shape
+    # Scale figure with the grid but keep a sensible minimum readable size.
+    fig, ax = plt.subplots(figsize=(max(6.0, width * 0.6), max(5.0, height * 0.6)), dpi=100)
+    im = ax.imshow(grid, cmap=cmap, origin="upper", aspect="equal")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    ax.set_title(title)
+    ax.set_xlabel("column")
+    ax.set_ylabel("row")
+    ax.set_xticks(range(width))
+    ax.set_yticks(range(height))
+
+    # Annotate cells with their values when the grid is small enough to read.
+    if height * width <= 400:
+        threshold = float(grid.max() + grid.min()) / 2.0
+        for y in range(height):
+            for x in range(width):
+                cell = grid[y, x]
+                ax.text(
+                    x,
+                    y,
+                    f"{cell:.2f}",
+                    ha="center",
+                    va="center",
+                    fontsize=6,
+                    color="white" if cell < threshold else "black",
+                )
+
+    fig.tight_layout()
+    canvas: Any = FigureCanvasAgg(fig)
+    canvas.draw()
+    image = np.asarray(canvas.buffer_rgba())[..., :3].copy()
+    plt.close(fig)
+    return image
+
+
 class StateVisitationHeatmapHandler(MetricHandler):
     """
     Handler for state visitation heatmap.
@@ -70,7 +120,8 @@ class StateVisitationHeatmapHandler(MetricHandler):
         if heatmap.max() > 0:
             heatmap = heatmap / heatmap.max()
 
-        return {"type": "image", "tag": "state_heatmap", "data": heatmap}
+        image = _render_heatmap_image(heatmap, "State Visitation (normalized)", cmap="hot")
+        return {"type": "image", "tag": "state_heatmap", "data": image}
 
 
 class ValueFunctionHeatmapHandler(MetricHandler):
@@ -107,7 +158,8 @@ class ValueFunctionHeatmapHandler(MetricHandler):
             # Support both state values (scalar) and action-state values (dict)
             heatmap[y, x] = max(value.values()) if isinstance(value, dict) else value
 
-        return {"type": "image", "tag": "value_function", "data": heatmap}
+        image = _render_heatmap_image(heatmap, "Value Function (max Q per state)", cmap="viridis")
+        return {"type": "image", "tag": "value_function", "data": image}
 
 
 class PolicyVisualizationHandler(MetricHandler):
@@ -133,7 +185,7 @@ class PolicyVisualizationHandler(MetricHandler):
         environment = context_data[ContextKey.ENVIRONMENT]
         values = context_data[ContextKey.VALUE_FUNCTION]
 
-        image = environment.render_policy_array(values)
+        image = environment.render_policy_array(values, max_steps=self.config.max_steps)
 
         return {"type": "image", "tag": "policy_visualization", "data": image}
 
@@ -161,7 +213,9 @@ class AgentAnimationHandler(MetricHandler):
         values = context_data[ContextKey.VALUE_FUNCTION]
 
         frames = environment.render_greedy_agent_frames(
-            values, number_episodes=self.config.number_episodes
+            values,
+            number_episodes=self.config.number_episodes,
+            max_steps=self.config.max_steps,
         )
 
         return {
