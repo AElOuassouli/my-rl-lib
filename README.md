@@ -100,6 +100,23 @@ Open `http://localhost:5000` to view runs, metrics, and image/GIF artifacts.
 
 See [examples/](examples/) for complete runnable scripts.
 
+## Documentation
+
+Full API reference and narrative docs (built with [MkDocs](https://www.mkdocs.org/) +
+[Material](https://squidfunk.github.io/mkdocs-material/) + [mkdocstrings](https://mkdocstrings.github.io/))
+are generated from the source docstrings and the `examples/` scripts.
+
+To view them locally:
+
+```bash
+uv sync --group docs
+uv run mkdocs serve
+# or
+make docs
+```
+
+Then open `http://127.0.0.1:8000`.
+
 ## Project structure
 
 ```

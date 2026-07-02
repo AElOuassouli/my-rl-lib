@@ -138,7 +138,7 @@ class Environment(BaseModel, ABC, Generic[StateT, ActionT]):
         Args:
             values: The values to base the greedy policy on.
             number_episodes: Number of episodes to simulate.
-            seconds_per_step: Time in seconds per step in the animation.
+            fps: Frames per second for the animation.
             file_path: Optional path to save the animation.
         """
         pass
@@ -151,7 +151,6 @@ class Environment(BaseModel, ABC, Generic[StateT, ActionT]):
         Args:
             policy: The policy to use for action selection.
             max_steps: Maximum number of steps to simulate.
-            render: Whether to render the environment at each step.
         """
 
         # store (state, action, reward) tuples. The index represents the timestep.

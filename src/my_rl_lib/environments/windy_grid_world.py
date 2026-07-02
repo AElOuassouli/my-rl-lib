@@ -437,7 +437,7 @@ class WindyGridWorld(Environment[GridState, GridAction]):
 
         Args:
             ax: The matplotlib axis to draw on.
-            policy: The policy to render.
+            values: The values to render.
         """
 
         if values.type == ValuesType.STATE_VALUES:

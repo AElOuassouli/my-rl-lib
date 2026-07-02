@@ -1,0 +1,76 @@
+site_name: my-rl-lib
+site_description: A modular reinforcement learning library implementing on-policy and off-policy algorithms with flexible metrics collection.
+site_author: Amine El Ouassouli
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            merge_init_into_class: true
+            show_signature_annotations: true
+            separate_signature: true
+            members_order: source
+            docstring_section_style: table
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      check_paths: true
+      base_path:
+        - "."
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - API Reference:
+      - Overview: api/index.md
+      - Environments: api/environments.md
+      - Learning:
+          - On-Policy: api/learning-on-policy.md
+          - Off-Policy: api/learning-off-policy.md
+      - Policies: api/policies.md
+      - Values: api/values.md
+      - Metrics: api/metrics.md
+  - Examples:
+      - Overview: examples/index.md
+      - SARSA with MLflow: examples/sarsa-mlflow.md
+      - Q-Learning Windy Grid World: examples/q-learning-windy-gridworld.md
+      - Metrics Tracking: examples/metrics-tracking.md
