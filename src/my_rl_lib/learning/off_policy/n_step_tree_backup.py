@@ -1,15 +1,17 @@
-from my_rl_lib.environments.abstract import Environment
-from my_rl_lib.learning.result import LearningResult
-from my_rl_lib.types import ActionT, StateT
-from my_rl_lib.policies.abstract import Policy
-from my_rl_lib.policies.greedy import Greedy
-from my_rl_lib.values.action_state import ActionStateValues
-from my_rl_lib.values.initializer import Initializer
-from my_rl_lib.metrics import MetricsCollector
+from __future__ import annotations
+
 from tqdm.auto import trange
 
+from my_rl_lib.environments.abstract import Environment
 from my_rl_lib.learning.n_step_utils import compute_n_step_tree_backup_return
+from my_rl_lib.learning.result import LearningResult
 from my_rl_lib.learning.steps_store import EpisodeStepsCircularStore, LearningStep
+from my_rl_lib.metrics import MetricsCollector
+from my_rl_lib.policies.abstract import Policy
+from my_rl_lib.policies.greedy import Greedy
+from my_rl_lib.types import ActionT, StateT
+from my_rl_lib.values.action_state import ActionStateValues
+from my_rl_lib.values.initializer import Initializer
 
 
 def n_step_tree_backup(
@@ -20,15 +22,34 @@ def n_step_tree_backup(
     alpha: float,
     gamma: float,
     initializer: Initializer,
-    metrics_collector: MetricsCollector | None = None,
+    metrics_collector: MetricsCollector | None = None,  # Mutable: will be populated during training
 ) -> LearningResult[StateT, ActionT]:
+    """
+    N-step tree backup off-policy learning algorithm.
+
+    Args:
+        environment: The environment to train in
+        behavior_policy: Policy used to generate behavior (must have non-zero
+                        probability for all state-action pairs)
+        num_episodes: Number of training episodes
+        n: Number of steps for n-step returns
+        alpha: Learning rate (step size)
+        gamma: Discount factor
+        initializer: Value initialization strategy
+        metrics_collector: Optional metrics collector. If provided, it will be
+                          populated with training metrics during execution.
+                          The collector is mutable and modified in-place.
+
+    Returns:
+        Tuple of (learned values, learned target policy)
+    """
     values: ActionStateValues[StateT, ActionT] = ActionStateValues()
     values.init_from_environment(environment=environment, initializer=initializer)
 
     policy: Greedy[StateT, ActionT] = Greedy()
     policy.init_from_environment_and_values(environment=environment, values=values)
 
-    for episode in trange(num_episodes, desc="N-Step SARSA Off-Policy Episodes", unit="episode"):
+    for episode in trange(num_episodes, desc="N-Step Tree Backup Episodes", unit="episode"):
         environment.reset()
 
         store: EpisodeStepsCircularStore[StateT, ActionT] = EpisodeStepsCircularStore(n=n)
@@ -36,7 +57,7 @@ def n_step_tree_backup(
         episode_steps = 0
 
         initial_state = environment.current_state
-        assert initial_state is not None  # set by reset()s
+        assert initial_state is not None  # set by reset()
 
         store.set_step(
             0,
@@ -49,14 +70,13 @@ def n_step_tree_backup(
 
         T = float("inf")
         t = 0
-        tau = -float("inf")
 
-        while tau < T - 1:
+        while True:
             if t < T:
                 entry = store.get_step(t)
 
                 At = entry.action
-                assert At is not None
+                assert At is not None  # only the terminal step stores a None action
 
                 step_result = environment.step(action=At)
 
@@ -89,9 +109,32 @@ def n_step_tree_backup(
 
                 step_tau = store.get_step(tau)
                 value_tau = values.get_value((step_tau.state, step_tau.action))
-                update = value_tau + alpha * (G - value_tau)
+                td_error = G - value_tau
+                update = value_tau + alpha * td_error
                 values.set_value((step_tau.state, step_tau.action), update)
 
                 policy.update_probabilities_for_state(step_tau.state, values)
+
+                # Record step metrics
+                if metrics_collector is not None:
+                    metrics_collector.on_step(
+                        episode,
+                        t,
+                        td_error=abs(td_error),
+                        value_change=abs(alpha * td_error),
+                    )
+
+            if tau == T - 1:
+                break
+
+            t += 1
+
+        # Record episode metrics
+        if metrics_collector is not None:
+            metrics_collector.on_episode_end(
+                episode,
+                episode_reward=episode_reward,
+                episode_steps=float(episode_steps),
+            )
 
     return LearningResult(values=values, policy=policy)

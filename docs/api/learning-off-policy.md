@@ -12,6 +12,10 @@
 
 ::: my_rl_lib.learning.off_policy.n_step_sarsa_off_policy
 
+## n-step Tree Backup
+
+::: my_rl_lib.learning.off_policy.n_step_tree_backup
+
 ## Shared Utilities
 
 ::: my_rl_lib.learning.n_step_utils
