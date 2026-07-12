@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from tqdm.auto import trange
 
 from my_rl_lib.environments.abstract import Environment
@@ -7,6 +9,7 @@ from my_rl_lib.learning.n_step_utils import compute_n_step_tree_backup_return
 from my_rl_lib.learning.result import LearningResult
 from my_rl_lib.learning.steps_store import EpisodeStepsCircularStore, LearningStep
 from my_rl_lib.metrics import MetricsCollector
+from my_rl_lib.metrics.context_key import ContextKey
 from my_rl_lib.policies.abstract import Policy
 from my_rl_lib.policies.greedy import Greedy
 from my_rl_lib.types import ActionT, StateT
@@ -30,7 +33,11 @@ def n_step_tree_backup(
     Args:
         environment: The environment to train in
         behavior_policy: Policy used to generate behavior (must have non-zero
-                        probability for all state-action pairs)
+                        probability for all state-action pairs, e.g. an
+                        epsilon-greedy policy). It is updated in-place from
+                        the same learned action-values as the target policy
+                        at every tau step, so its exploration improves over
+                        the course of training while remaining stochastic.
         num_episodes: Number of training episodes
         n: Number of steps for n-step returns
         alpha: Learning rate (step size)
@@ -49,12 +56,15 @@ def n_step_tree_backup(
     policy: Greedy[StateT, ActionT] = Greedy()
     policy.init_from_environment_and_values(environment=environment, values=values)
 
+    all_state_visits: dict[StateT, int] = {}
+
     for episode in trange(num_episodes, desc="N-Step Tree Backup Episodes", unit="episode"):
         environment.reset()
 
         store: EpisodeStepsCircularStore[StateT, ActionT] = EpisodeStepsCircularStore(n=n)
         episode_reward = 0.0
         episode_steps = 0
+        episode_state_visits: list[StateT] = []
 
         initial_state = environment.current_state
         assert initial_state is not None  # set by reset()
@@ -96,6 +106,7 @@ def n_step_tree_backup(
                 if metrics_collector is not None:
                     episode_reward += step_result.reward
                     episode_steps += 1
+                    episode_state_visits.append(entry.state)
 
                 if environment.is_current_state_terminal():
                     T = t + 1
@@ -114,6 +125,7 @@ def n_step_tree_backup(
                 values.set_value((step_tau.state, step_tau.action), update)
 
                 policy.update_probabilities_for_state(step_tau.state, values)
+                behavior_policy.update_probabilities_for_state(step_tau.state, values)
 
                 # Record step metrics
                 if metrics_collector is not None:
@@ -131,10 +143,26 @@ def n_step_tree_backup(
 
         # Record episode metrics
         if metrics_collector is not None:
-            metrics_collector.on_episode_end(
-                episode,
-                episode_reward=episode_reward,
-                episode_steps=float(episode_steps),
+            for state in episode_state_visits:
+                all_state_visits[state] = all_state_visits.get(state, 0) + 1
+
+            context_data: dict[str, Any] = {
+                ContextKey.EPISODE_REWARD.value: episode_reward,
+                ContextKey.EPISODE_STEPS.value: float(episode_steps),
+            }
+
+            required_keys = (
+                metrics_collector._all_required_keys
+                if hasattr(metrics_collector, "_all_required_keys")
+                else set()
             )
+            if ContextKey.STATE_VISITS in required_keys:
+                context_data[ContextKey.STATE_VISITS.value] = dict(all_state_visits)
+            if ContextKey.VALUE_FUNCTION in required_keys:
+                context_data[ContextKey.VALUE_FUNCTION.value] = values
+            if ContextKey.ENVIRONMENT in required_keys:
+                context_data[ContextKey.ENVIRONMENT.value] = environment
+
+            metrics_collector.on_episode_end(episode, **context_data)
 
     return LearningResult(values=values, policy=policy)

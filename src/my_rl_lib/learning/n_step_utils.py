@@ -84,11 +84,10 @@ def compute_n_step_tree_backup_return(
                 gamma * possible_action_probability * values.get_value((state_t_1, possible_action))
             )
 
-    k = min(t, T - 1) if isinstance(T, int) else t
+    k_start = min(t, T - 1) if isinstance(T, int) else t
     assert G is not None
 
-    for index in list(reversed(range(tau + 1, k + 1))):
-        print(index)
+    for k in reversed(range(tau + 1, k_start + 1)):
         step_k = store.get_step(k)
         if step_k.reward is None:
             raise ValueError(f"Reward at time step {k} should not be None.")

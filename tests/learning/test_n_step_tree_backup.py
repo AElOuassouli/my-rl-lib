@@ -4,12 +4,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from my_rl_lib.environments.abstract import StepResult
 from my_rl_lib.learning.off_policy.n_step_tree_backup import n_step_tree_backup
 from my_rl_lib.learning.result import LearningResult
 from my_rl_lib.metrics import MetricsCollector
 from my_rl_lib.policies.epsilon_greedy import EpsilonGreedy
 from my_rl_lib.policies.greedy import Greedy
 from my_rl_lib.values.action_state import ActionStateValues
+from my_rl_lib.values.initializer import Initializer, InitializerType
 
 
 def _make_behavior_policy(env, initializer):
@@ -19,6 +21,70 @@ def _make_behavior_policy(env, initializer):
     policy = EpsilonGreedy(epsilon=0.0)
     policy.init_from_environment_and_values(env, values)
     return policy
+
+
+def _make_chain_env():
+    """Deterministic 4-state chain: 0->1->2->3(terminal), single action, rewards 1,2,3.
+
+    A single action per state makes the tree-backup branch sum collapse to the
+    chosen action's term, so G_tau reduces to the plain discounted return
+    R_1 + gamma*R_2 + gamma^2*R_3 — letting the recursion's step-by-step
+    correctness be checked against a hand-computed value.
+    """
+    env = MagicMock()
+    env.get_states.return_value = [0, 1, 2, 3]
+    env.get_terminal_states.return_value = [3]
+    env.get_actions_per_state.return_value = {0: [0], 1: [0], 2: [0], 3: [0]}
+    env.get_current_possible_actions.return_value = [0]
+    env.current_state = 0
+
+    rewards_by_state = {0: 1.0, 1: 2.0, 2: 3.0}
+    next_state_by_state = {0: 1, 1: 2, 2: 3}
+
+    def reset_effect():
+        env.current_state = 0
+
+    env.reset.side_effect = reset_effect
+
+    def step_effect(action):
+        reward = rewards_by_state[env.current_state]
+        env.current_state = next_state_by_state[env.current_state]
+        return StepResult(next_state=env.current_state, reward=reward)
+
+    env.step.side_effect = step_effect
+    env.is_current_state_terminal.side_effect = lambda: env.current_state == 3
+
+    return env
+
+
+def _make_action_dependent_reward_env():
+    """Single-step 2-state env where the reward depends on the action taken.
+
+    Action 0 -> reward +1.0, action 1 -> reward -1.0. Lets a test drive the
+    behavior policy's choice at t=0 and observe the resulting value update.
+    """
+    env = MagicMock()
+    env.get_states.return_value = [0, 1]
+    env.get_terminal_states.return_value = [1]
+    env.get_actions_per_state.return_value = {0: [0, 1], 1: [0, 1]}
+    env.get_current_possible_actions.return_value = [0, 1]
+    env.current_state = 0
+
+    def reset_effect():
+        env.current_state = 0
+
+    env.reset.side_effect = reset_effect
+
+    reward_by_action = {0: 1.0, 1: -1.0}
+
+    def step_effect(action):
+        env.current_state = 1
+        return StepResult(next_state=1, reward=reward_by_action[action])
+
+    env.step.side_effect = step_effect
+    env.is_current_state_terminal.side_effect = lambda: env.current_state == 1
+
+    return env
 
 
 class TestNStepTreeBackupReturnType:
@@ -127,6 +193,69 @@ class TestNStepTreeBackupUpdate:
             initializer=basic_initializer,
         )
         assert isinstance(result, LearningResult)
+
+    def test_behavior_policy_tracks_learned_values_across_episodes(self):
+        # The behavior policy must track the same learned action-values as the
+        # target policy (it is never used in the return computation, so this
+        # cannot affect correctness — only how quickly exploration improves).
+        # Behavior initially (wrongly) prefers action 1 in state 0, independent
+        # of the algorithm's own zero-initialized values. Action 1 earns a
+        # -1.0 reward, so after episode 1's update, Q(0,0)=0.0 > Q(0,1)=-1.0
+        # and the behavior policy's greedy pick for state 0 should flip to
+        # action 0 for episode 2.
+        env = _make_action_dependent_reward_env()
+        initializer = Initializer(
+            initializer_type=InitializerType.CONSTANT,
+            terminal_states_value=0.0,
+            constant_value_non_terminal=0.0,
+        )
+
+        behavior_values = ActionStateValues()
+        behavior_values.init_from_environment(env, initializer)
+        behavior_values.set_value((0, 0), 0.0)
+        behavior_values.set_value((0, 1), 5.0)
+        behavior = EpsilonGreedy(epsilon=0.0)
+        behavior.init_from_environment_and_values(env, behavior_values)
+
+        n_step_tree_backup(
+            env,
+            behavior_policy=behavior,
+            num_episodes=2,
+            n=1,
+            alpha=1.0,
+            gamma=1.0,
+            initializer=initializer,
+        )
+
+        actions_taken = [call.kwargs["action"] for call in env.step.call_args_list]
+        assert actions_taken == [1, 0]
+
+    def test_multi_step_return_matches_hand_computed_value(self):
+        # Regression test for the backward-recursion bug where the loop index
+        # `k` was never decremented, so every iteration reused the same step
+        # instead of walking S_2, then S_1. With a single action per state the
+        # tree-backup branch sum collapses to the chosen action's term, so
+        # G_0 must equal the plain discounted return:
+        #   G_0 = R_1 + gamma*R_2 + gamma^2*R_3 = 1 + 0.5*2 + 0.25*3 = 2.75
+        env = _make_chain_env()
+        initializer = Initializer(
+            initializer_type=InitializerType.CONSTANT,
+            terminal_states_value=0.0,
+            constant_value_non_terminal=0.0,
+        )
+        behavior = _make_behavior_policy(env, initializer)
+
+        result = n_step_tree_backup(
+            env,
+            behavior_policy=behavior,
+            num_episodes=1,
+            n=3,
+            alpha=1.0,
+            gamma=0.5,
+            initializer=initializer,
+        )
+
+        assert result.values.get_value((0, 0)) == pytest.approx(2.75)
 
 
 class TestNStepTreeBackupMetricsCollector:
