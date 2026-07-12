@@ -42,7 +42,6 @@ def n_step_sarsa_off_policy(
         n: Number of steps for n-step returns
         alpha: Learning rate (step size)
         gamma: Discount factor
-        epsilon: Unused parameter (kept for compatibility)
         initializer: Value initialization strategy
         metrics_collector: Optional metrics collector. If provided, it will be
                           populated with training metrics during execution.
