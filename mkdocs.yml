@@ -73,4 +73,5 @@ nav:
       - Overview: examples/index.md
       - SARSA with MLflow: examples/sarsa-mlflow.md
       - Q-Learning Windy Grid World: examples/q-learning-windy-gridworld.md
+      - N-Step Tree Backup Windy Grid World: examples/n-step-tree-backup-mlflow.md
       - Metrics Tracking: examples/metrics-tracking.md

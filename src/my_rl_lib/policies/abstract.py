@@ -85,7 +85,7 @@ class Policy(BaseModel, ABC, Generic[StateT, ActionT]):
     def select_action(self, state: StateT) -> ActionT:
         """Select an action based on the policy's action probabilities for the given state."""
         if self.action_probabilities_per_state is None:
-            raise ValueError("Action probabilities have not been initialized.")
+            raise ValueError("Action probabilities has not been initialized.")
 
         if state not in self.action_probabilities_per_state:
             raise ValueError(f"No possible actions found for state {state}.")
@@ -99,6 +99,15 @@ class Policy(BaseModel, ABC, Generic[StateT, ActionT]):
         action_weights = list(state_actions.values())
 
         return choices(possible_actions, weights=action_weights, k=1)[0]
+
+    def get_actions_probabilities_given_state(self, state: StateT) -> dict[ActionT, float]:
+        if self.action_probabilities_per_state is None:
+            raise ValueError("Action probabilities has not been initialiazed")
+
+        if state not in self.action_probabilities_per_state:
+            raise ValueError(f"No possible actions found for state {state}")
+
+        return self.action_probabilities_per_state[state]
 
     @abstractmethod
     @validate_probabilities()

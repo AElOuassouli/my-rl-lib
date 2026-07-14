@@ -1,24 +1,26 @@
 from __future__ import annotations
 
+from typing import Any
+
 from tqdm.auto import trange
 
 from my_rl_lib.environments.abstract import Environment
-from my_rl_lib.learning.n_step_utils import compute_n_step_return
+from my_rl_lib.learning.n_step_utils import compute_n_step_tree_backup_return
 from my_rl_lib.learning.result import LearningResult
 from my_rl_lib.learning.steps_store import EpisodeStepsCircularStore, LearningStep
 from my_rl_lib.metrics import MetricsCollector
+from my_rl_lib.metrics.context_key import ContextKey
 from my_rl_lib.policies.abstract import Policy
 from my_rl_lib.policies.greedy import Greedy
-from my_rl_lib.policies.importance_sampling import compute_importance_sampling_ratio_circular_buffer
 from my_rl_lib.types import ActionT, StateT
 from my_rl_lib.values.action_state import ActionStateValues
 from my_rl_lib.values.initializer import Initializer
 
 
-def n_step_sarsa_off_policy(
+def n_step_tree_backup(
     environment: Environment[StateT, ActionT],
-    num_episodes: int,
     behavior_policy: Policy[StateT, ActionT],
+    num_episodes: int,
     n: int,
     alpha: float,
     gamma: float,
@@ -26,13 +28,17 @@ def n_step_sarsa_off_policy(
     metrics_collector: MetricsCollector | None = None,  # Mutable: will be populated during training
 ) -> LearningResult[StateT, ActionT]:
     """
-    N-step SARSA off-policy learning algorithm with importance sampling.
+    N-step tree backup off-policy learning algorithm.
 
     Args:
         environment: The environment to train in
-        num_episodes: Number of training episodes
         behavior_policy: Policy used to generate behavior (must have non-zero
-                        probability for all state-action pairs)
+                        probability for all state-action pairs, e.g. an
+                        epsilon-greedy policy). It is updated in-place from
+                        the same learned action-values as the target policy
+                        at every tau step, so its exploration improves over
+                        the course of training while remaining stochastic.
+        num_episodes: Number of training episodes
         n: Number of steps for n-step returns
         alpha: Learning rate (step size)
         gamma: Discount factor
@@ -50,15 +56,19 @@ def n_step_sarsa_off_policy(
     policy: Greedy[StateT, ActionT] = Greedy()
     policy.init_from_environment_and_values(environment=environment, values=values)
 
-    for episode in trange(num_episodes, desc="N-Step SARSA Off-Policy Episodes", unit="episode"):
+    all_state_visits: dict[StateT, int] = {}
+
+    for episode in trange(num_episodes, desc="N-Step Tree Backup Episodes", unit="episode"):
         environment.reset()
 
         store: EpisodeStepsCircularStore[StateT, ActionT] = EpisodeStepsCircularStore(n=n)
         episode_reward = 0.0
         episode_steps = 0
+        episode_state_visits: list[StateT] = []
 
         initial_state = environment.current_state
         assert initial_state is not None  # set by reset()
+
         store.set_step(
             0,
             LearningStep(
@@ -96,35 +106,26 @@ def n_step_sarsa_off_policy(
                 if metrics_collector is not None:
                     episode_reward += step_result.reward
                     episode_steps += 1
+                    episode_state_visits.append(entry.state)
 
                 if environment.is_current_state_terminal():
                     T = t + 1
 
             tau = t - n + 1  # time whose estimate is being updated
-            if tau >= 0:
-                # Compute G (n-step return)
-                G = compute_n_step_return(store, n, tau, T, gamma, values)
 
-                # Compute importance sampling ratio
-                upper_bound = int(min(tau + n - 1, T - 1)) if T != float("inf") else tau + n - 1
-                rho = compute_importance_sampling_ratio_circular_buffer(
-                    target_policy=policy,
-                    behavior_policy=behavior_policy,
-                    steps=store,
-                    lower_bound=tau + 1,
-                    upper_bound=upper_bound,
+            if tau >= 0:
+                G = compute_n_step_tree_backup_return(
+                    store=store, n=n, tau=tau, t=t, T=T, gamma=gamma, values=values, policy=policy
                 )
 
-                # Update Q-value with importance sampling
-                entry_tau = store.get_step(tau)
-                S_tau = entry_tau.state
-                A_tau = entry_tau.action
-                previous_value = values.get_value((S_tau, A_tau))
-                td_error = rho * (G - previous_value)
-                values.set_value((S_tau, A_tau), previous_value + alpha * td_error)
+                step_tau = store.get_step(tau)
+                value_tau = values.get_value((step_tau.state, step_tau.action))
+                td_error = G - value_tau
+                update = value_tau + alpha * td_error
+                values.set_value((step_tau.state, step_tau.action), update)
 
-                # Update target policy
-                policy.update_probabilities_for_state(S_tau, values)
+                policy.update_probabilities_for_state(step_tau.state, values)
+                behavior_policy.update_probabilities_for_state(step_tau.state, values)
 
                 # Record step metrics
                 if metrics_collector is not None:
@@ -133,7 +134,6 @@ def n_step_sarsa_off_policy(
                         t,
                         td_error=abs(td_error),
                         value_change=abs(alpha * td_error),
-                        importance_ratio=rho,
                     )
 
             if tau == T - 1:
@@ -143,10 +143,26 @@ def n_step_sarsa_off_policy(
 
         # Record episode metrics
         if metrics_collector is not None:
-            metrics_collector.on_episode_end(
-                episode,
-                episode_reward=episode_reward,
-                episode_steps=float(episode_steps),
+            for state in episode_state_visits:
+                all_state_visits[state] = all_state_visits.get(state, 0) + 1
+
+            context_data: dict[str, Any] = {
+                ContextKey.EPISODE_REWARD.value: episode_reward,
+                ContextKey.EPISODE_STEPS.value: float(episode_steps),
+            }
+
+            required_keys = (
+                metrics_collector._all_required_keys
+                if hasattr(metrics_collector, "_all_required_keys")
+                else set()
             )
+            if ContextKey.STATE_VISITS in required_keys:
+                context_data[ContextKey.STATE_VISITS.value] = dict(all_state_visits)
+            if ContextKey.VALUE_FUNCTION in required_keys:
+                context_data[ContextKey.VALUE_FUNCTION.value] = values
+            if ContextKey.ENVIRONMENT in required_keys:
+                context_data[ContextKey.ENVIRONMENT.value] = environment
+
+            metrics_collector.on_episode_end(episode, **context_data)
 
     return LearningResult(values=values, policy=policy)
