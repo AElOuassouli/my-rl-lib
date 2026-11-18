@@ -3,7 +3,7 @@ from typing import Any
 from my_rl_lib.learning.steps_store import EpisodeStepsCircularStore
 from my_rl_lib.values.action_state import ActionStateValues
 from my_rl_lib.policies.abstract import Policy
-
+from my_rl_lib.types import ActionT, StateT
 
 def compute_n_step_return(
     store: EpisodeStepsCircularStore[Any, Any],
@@ -115,3 +115,48 @@ def compute_n_step_tree_backup_return(
         G = G_new
 
     return G
+
+
+def compute_n_step_sigma_tree_backup_return(
+    store: EpisodeStepsCircularStore[StateT, ActionT],
+    G: float,
+    tau: int,
+    t: int,
+    T: int | float,
+    gamma: float,
+    values: ActionStateValues[Any, Any],
+    policy: Policy[Any, Any],
+) -> float:
+    if t + 1 < T:
+        step = store.get_step(t + 1)
+        G = values.get_value((step.state, step.action))
+        assert G is not None
+
+    k_start = min(t + 1, T) if isinstance(T, int) else t + 1
+
+    for k in reversed(range(tau + 1, k_start)):
+        step = store.get_step(k)
+        if k == T:
+            if step.reward is None:
+                raise ValueError(f"Reward at time step {k} should not be None.")
+            G = step.reward
+
+        else:
+            V = values.get_expected_value(step.state, policy)
+
+            if step.sigma is None or step.rho is None or step.reward is None:
+                raise ValueError(f"The reward, rho and sigma shouldn't be None at step {k}")
+
+            G = (
+                step.reward
+                + gamma
+                * (
+                    step.sigma * step.rho
+                    + (1 - step.sigma)
+                    * policy.get_action_probability_given_state(step.state, step.action)
+                )
+                * (G - values.get_value((step.state, step.action)))
+                + gamma * V
+            )
+
+    return G  
