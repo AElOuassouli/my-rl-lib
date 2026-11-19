@@ -5,6 +5,7 @@ from my_rl_lib.values.action_state import ActionStateValues
 from my_rl_lib.policies.abstract import Policy
 from my_rl_lib.types import ActionT, StateT
 
+
 def compute_n_step_return(
     store: EpisodeStepsCircularStore[Any, Any],
     n: int,
@@ -159,4 +160,4 @@ def compute_n_step_sigma_tree_backup_return(
                 + gamma * V
             )
 
-    return G  
+    return G
